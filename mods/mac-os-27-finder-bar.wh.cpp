@@ -86,7 +86,7 @@ Turn on **Windows notifications** in logo → **Menu Bar Settings…** → **Not
 - Choose where the bar shows: all displays, the main one, or a specific display (listed by name); if that display is disconnected, the bar moves to the main one
 - **Disks** (optional): its menu lists every local and removable disk with a usage bar and opens it in Explorer
 - Bar icons share one size: each icon is measured and scaled to the same height, and icons and text grow together with one size setting; the bar height is set on its own
-- Nine selection colors: one for the bar, the menus and their switches; and the font of the bar and panels, picked in the settings window
+- Nine selection colors, or a gradient of two, shared by the bar, the menus and their switches; and the font of the bar and panels, picked in the settings window
 - Hides with full-screen apps (optional)
 
 ## Settings
@@ -19165,8 +19165,9 @@ static void IslandStart(const IslandNote& n) {
 }
 
 static void NtfRefresh();
+static bool g_islTestNoPill = false;  // notificação de teste com as pílulas desligadas: só o painel
 static void IslandPush(const IslandNote& n, bool force) {
-    if (!g_settings.islandPills && !force) return;
+    if (!g_settings.islandPills && !force && !g_islTestNoPill) return;
     bool isNotif = n.isNotif;
     // Vão para o painel de notificações só as notificações dos apps e os avisos
     // com algo a fazer (abrir a captura, a gravação, o download...). "Copiado",
@@ -19202,6 +19203,7 @@ static void IslandPush(const IslandNote& n, bool force) {
         if (g_settings.islHistory) RedrawAll();
         NtfRefresh();  // painel de notificações aberto: entra na hora
     }
+    if (g_islTestNoPill) return;
     if (g_isl.hwnd) {
         // Aviso de estado (Caps Lock, Foco, saída de áudio...): o mesmo tipo de aviso
         // que já está na pílula troca o texto na hora, e os repetidos na fila somem.
@@ -21195,10 +21197,6 @@ static float NtfRepliesH(int histIdx, float s) {
 }
 static float NtfRowH(float s) { return 64 * s; }    // item extra num grupo aberto
 
-// Onde cada bloco está agora, entre a pilha e a lista: cada cartão sai na sua
-// vez (cascata) com uma mola que passa um pouco e volta; os de trás aparecem
-// com o conteúdo esmaecendo. Também ajusta a altura do painel. Devolve true
-// quando a animação acabou.
 // Folga embaixo, para o último cartão sair inteiro do monte da borda.
 static float NtfPileGap() { return NtfFloating() ? 26 * g_ntf.s : 0.0f; }
 static float NtfMaxScroll() {
@@ -21207,16 +21205,15 @@ static float NtfMaxScroll() {
     return over > 0 ? over + NtfPileGap() : 0.0f;
 }
 // Rolando a lista (solta e aberta), os cartões que passam da borda de baixo não
-// somem cortados: se amontoam nela, cada um um pouco atrás e menor que o
-// anterior, como no Android; na de cima, o mesmo. Rolar os tira do monte.
+// somem cortados: se amontoam nela, cada um um pouco atrás do anterior (com a
+// mesma largura), como no Android; na de cima, o mesmo. Rolar os tira do monte.
 static void NtfPile() {
     float s = g_ntf.s;
     bool on = NtfFloating() && (!g_ntf.stackable || (g_ntf.stackOpen && !g_ntf.stackTick));
     float vh = g_ntf.view.bottom - g_ntf.view.top, D = 12 * s;
     float Lb = vh - NtfPileGap() + 4 * s;                   // começa a amontoar embaixo
     float Tt = std::min(g_ntf.scroll, 16 * s);              // e em cima (só depois de rolar)
-    struct Move { float dy, in; };
-    std::map<int, Move> byGroup;  // o chip vai junto com o seu cartão
+    std::map<int, float> byGroup;  // o chip vai junto com o seu cartão
     for (NtfBlock& b : g_ntf.blocks) {
         b.pileDepth = 0;
         if (!on || (b.kind != 1 && b.kind != 4)) continue;
@@ -21229,19 +21226,18 @@ static void NtfPile() {
             dy = Tt - D * (1 - std::exp(-x)) - vt;
         }
         if (x <= 0) continue;
-        float in = 0;  // mesma largura (só se amontoam)
         b.pileDepth = x;
-        b.r = D2D1::RectF(b.r.left + in, b.r.top + dy, b.r.right - in, b.r.bottom + dy);
+        b.r = D2D1::RectF(b.r.left, b.r.top + dy, b.r.right, b.r.bottom + dy);
         if (b.reply.right > b.reply.left)
-            b.reply = D2D1::RectF(b.reply.left - in, b.reply.top + dy, b.reply.right - in, b.reply.bottom + dy);
+            b.reply = D2D1::RectF(b.reply.left, b.reply.top + dy, b.reply.right, b.reply.bottom + dy);
         b.contentA *= std::clamp(1 - (x - 1.0f) * 0.7f, 0.0f, 1.0f);  // fundo do monte: só o vidro
         b.alpha *= std::clamp(1.8f - x * 0.25f, 0.0f, 1.0f);           // bem no fundo, some
-        if (b.kind == 1) byGroup[b.group] = {dy, in};
+        if (b.kind == 1) byGroup[b.group] = dy;
     }
     for (NtfBlock& b : g_ntf.blocks)
         if (b.kind == 2 && byGroup.count(b.group)) {
-            Move m = byGroup[b.group];
-            b.r = D2D1::RectF(b.r.left + m.in, b.r.top + m.dy, b.r.right + m.in, b.r.bottom + m.dy);
+            float dy = byGroup[b.group];
+            b.r = D2D1::RectF(b.r.left, b.r.top + dy, b.r.right, b.r.bottom + dy);
             b.alpha = 0;  // no monte, o chip fica escondido
         }
 }
@@ -21265,7 +21261,6 @@ static void NtfStackRects() {
         if (b.kind == 1 && b.group == g_ntf.stackRot) front = &b;
     if (!front) return;
     float frontH = front->rl.bottom - front->rl.top, x0 = front->rl.left, x1 = front->rl.right;
-    std::map<int, D2D1_RECT_F> cardRs;
     for (NtfBlock& b : g_ntf.blocks) {
         if (b.kind != 1) continue;
         int d = ((b.group - g_ntf.stackRot) % n + n) % n;
@@ -21275,7 +21270,6 @@ static void NtfStackRects() {
         b.rs = d == 0 ? D2D1::RectF(x0, 0, x1, frontH) : D2D1::RectF(x0 + in, drop, x1 - in, frontH + drop);
         b.rsAlpha = d <= 2 ? 1.0f : 0.0f;
         b.rsContent = d == 0 ? 1.0f : 0.0f;
-        cardRs[b.group] = b.rs;
     }
     float shift = frontH + 9 * s * 2 + 14 * s - g_ntf.cardsListEnd;
     for (size_t i = 0; i < g_ntf.blocks.size(); i++) {
@@ -21314,11 +21308,16 @@ static void NtfStackRotate(int dir) {
     g_ntf.hover = -1;
     SetTimer(g_ntf.hwnd, 4, 10, nullptr);
 }
+// Mola que passa um pouco do fim e volta.
 static float NtfEaseBack(float u) {
     const float c1 = 1.35f, c3 = c1 + 1;
     float v = u - 1;
     return 1 + c3 * v * v * v + c1 * v * v;
 }
+// Onde cada bloco está agora, entre a pilha e a lista: cada cartão sai na sua
+// vez (cascata) com a mola; os de trás aparecem com o conteúdo esmaecendo; e
+// o giro da pilha. Também ajusta a altura do painel e os montes das bordas.
+// Devolve true quando a animação acabou.
 static bool NtfApplyStack() {
     float s = g_ntf.s, M = g_ntf.M;
     bool done = true;
@@ -21402,8 +21401,11 @@ static void NtfLayout() {
     g_ntf.blocks.clear();
     float y = 0;
     // Três apps ou mais, soltos: a pilha. Na lista aberta, "Mostrar menos" no alto.
+    bool wasStackable = g_ntf.stackable;
     g_ntf.stackable = g_settings.ntfCards && g_ntf.groups.size() >= 3;
     if (!g_ntf.stackable) g_ntf.stackOpen = false;
+    // O terceiro app chegou com a lista já aberta: ela continua aberta (não pula para a pilha).
+    else if (!wasStackable && g_ntf.hwnd) g_ntf.stackOpen = true;
     if (g_ntf.stackable) {
         NtfBlock hb{6, D2D1::RectF(x1 - 132 * s, 0, x1, 30 * s), -1, {}};
         hb.rsAlpha = 0;
@@ -22255,7 +22257,8 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEMOVE: {
             if ((wp & MK_LBUTTON) && GetCapture() == hwnd && !g_ntf.swiping) {
                 float dy = (float)LP_Y(lp) - g_ntf.dragY0, dx0 = (float)LP_X(lp) - g_ntf.swipeX0;
-                if (!g_ntf.dragScroll && NtfMaxScroll() > 0 && std::fabs(dy) > 8 * g_ntf.s && std::fabs(dy) > std::fabs(dx0))
+                if (!g_ntf.dragScroll && !(g_ntf.stackable && !g_ntf.stackOpen) && NtfMaxScroll() > 0 &&
+                    std::fabs(dy) > 8 * g_ntf.s && std::fabs(dy) > std::fabs(dx0))
                     g_ntf.dragScroll = true;
                 if (g_ntf.dragScroll) {
                     g_ntf.scroll = g_ntf.scrollTarget = std::clamp(g_ntf.dragScroll0 - dy, 0.0f, NtfMaxScroll());
@@ -22469,6 +22472,7 @@ static void NtfToggle(Bar* b, int idx) {
     g_ntf.scroll = 0;
     g_ntf.hover = -1;
     g_ntf.stackOpen = false;  // abre na pilha
+    g_ntf.stackable = false;
     g_ntf.stackTick = 0;
     g_ntf.scrollTarget = 0;
     g_ntf.stackRot = 0;
@@ -22620,7 +22624,10 @@ static void BsAction(int val) {
             note.app = T(f.app);
             note.title = T(f.who);
             note.body = TF(L"%s (teste %s)", {std::wstring(T(f.text)), std::to_wstring(n)});
+            // Com as pílulas desligadas, vai só para o botão (como o histórico).
+            g_islTestNoPill = !g_settings.islandPills;
             IslandPush(note, false);
+            g_islTestNoPill = false;
             break;
         }
         case BV_ISLCLEAR:
