@@ -63,6 +63,8 @@ Small glass pills drop from the bar for headphones, audio output, low battery, c
 
 ## Notifications
 
+![Stacked notifications: the wheel turns the stack, a drag dismisses the front card and a click spreads them into the list](https://raw.githubusercontent.com/brideinflame-rgb/Mac-OS-27-Finder-Bar/main/screenshots/notifications-stack.webp)
+
 Turn on **Receive app notifications** in logo → **Menu Bar Settings…** → **Notice pills** → **Notifications button** (off by default) and the bar shows your apps' notifications. It works on its own: with **Show notice pills** off, notifications still go to the bell; with both on, they also drop in a pill:
 
 - in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked, the mouse wheel turns the stack to the next one, and a click spreads them into the list with an animation; scrolling, with the wheel or by dragging, piles the cards at the edges, as on Android) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
