@@ -19165,9 +19165,11 @@ static void IslandStart(const IslandNote& n) {
 }
 
 static void NtfRefresh();
-static bool g_islTestNoPill = false;  // notificação de teste com as pílulas desligadas: só o painel
 static void IslandPush(const IslandNote& n, bool force) {
-    if (!g_settings.islandPills && !force && !g_islTestNoPill) return;
+    // Pílulas desligadas: as notificações dos apps ainda vão para o botão (sem
+    // a pílula); os outros avisos, não.
+    bool noPill = !g_settings.islandPills && !force;
+    if (noPill && !n.isNotif) return;
     bool isNotif = n.isNotif;
     // Vão para o painel de notificações só as notificações dos apps e os avisos
     // com algo a fazer (abrir a captura, a gravação, o download...). "Copiado",
@@ -19203,7 +19205,7 @@ static void IslandPush(const IslandNote& n, bool force) {
         if (g_settings.islHistory) RedrawAll();
         NtfRefresh();  // painel de notificações aberto: entra na hora
     }
-    if (g_islTestNoPill) return;
+    if (noPill) return;
     if (g_isl.hwnd) {
         // Aviso de estado (Caps Lock, Foco, saída de áudio...): o mesmo tipo de aviso
         // que já está na pílula troca o texto na hora, e os repetidos na fila somem.
@@ -20854,7 +20856,7 @@ static void BnrOnNotification() {
 
 // Liga/desliga conforme o ajuste.
 static void NotifApply() {
-    bool want = g_settings.winNotifs && g_settings.islandPills;
+    bool want = g_settings.winNotifs;  // mesmo sem as pílulas: as notificações vão para o botão
     if (!want) {
         NotifStop();
         g_notifApiOk = false;
@@ -21209,7 +21211,9 @@ static float NtfMaxScroll() {
 // mesma largura), como no Android; na de cima, o mesmo. Rolar os tira do monte.
 static void NtfPile() {
     float s = g_ntf.s;
-    bool on = NtfFloating() && (!g_ntf.stackable || (g_ntf.stackOpen && !g_ntf.stackTick));
+    // Só quando a lista não cabe (e rola): senão o último cartão entrava no monte
+    // e não dava para arrastá-lo para dispensar.
+    bool on = NtfFloating() && (!g_ntf.stackable || (g_ntf.stackOpen && !g_ntf.stackTick)) && NtfMaxScroll() > 0;
     float vh = g_ntf.view.bottom - g_ntf.view.top, D = 12 * s;
     float Lb = vh - NtfPileGap() + 4 * s;                   // começa a amontoar embaixo
     float Tt = std::min(g_ntf.scroll, 16 * s);              // e em cima (só depois de rolar)
@@ -22624,10 +22628,7 @@ static void BsAction(int val) {
             note.app = T(f.app);
             note.title = T(f.who);
             note.body = TF(L"%s (teste %s)", {std::wstring(T(f.text)), std::to_wstring(n)});
-            // Com as pílulas desligadas, vai só para o botão (como o histórico).
-            g_islTestNoPill = !g_settings.islandPills;
-            IslandPush(note, false);
-            g_islTestNoPill = false;
+            IslandPush(note, false);  // com as pílulas desligadas, vai só para o botão
             break;
         }
         case BV_ISLCLEAR:
