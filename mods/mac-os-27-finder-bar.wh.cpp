@@ -21783,6 +21783,11 @@ static void NtfRender() {
         for (const NtfBlock& b : g_ntf.blocks)
             if (b.kind == 1 && b.depth == 0) {
                 frontR = D2D1::RectF(b.r.left, b.r.top + oy, b.r.right, b.r.bottom + oy);
+                // Arrastando o da frente para o lado: o de trás vai aparecendo.
+                if (g_ntf.swiping && g_ntf.swipeBlock >= 0 && &g_ntf.blocks[g_ntf.swipeBlock] == &b) {
+                    frontR.left += g_ntf.swipeDx;
+                    frontR.right += g_ntf.swipeDx;
+                }
                 stackFront = true;
             }
     std::vector<size_t> drawOrder;
@@ -22108,6 +22113,7 @@ static void NtfClose() {
 }
 
 // Nova notificação com o painel aberto: refaz a lista (o tamanho da janela fica).
+static bool g_ntfHoldRender = false;  // quem chamou desenha depois (com a animação)
 static void NtfRefresh() {
     if (!g_ntf.hwnd || g_ntf.closing) return;
     NtfBuildGroups();
@@ -22120,7 +22126,7 @@ static void NtfRefresh() {
     }
     NtfGlassShapes();
     g_islUnread = 0;
-    NtfRender();
+    if (!g_ntfHoldRender) NtfRender();
 }
 
 // A notificação (índice em g_islHist) sob o ponto y de um cartão ou aviso.
@@ -22227,7 +22233,10 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SetCapture(hwnd);
             }
             if (h >= 0 && h < (int)g_ntf.blocks.size() && (g_ntf.blocks[h].kind == 1 || g_ntf.blocks[h].kind == 4) &&
-                !(stacked && g_ntf.blocks[h].kind == 1) && g_ntf.blocks[h].pileDepth < 0.3f) {
+                !(stacked && g_ntf.blocks[h].kind == 1 &&
+                  (g_ntf.blocks[h].depth != 0 || g_ntf.stackTick || g_ntf.rotTick)) &&
+                g_ntf.blocks[h].pileDepth < 0.3f) {
+                // (Na pilha fechada, só o cartão da frente se arrasta para dispensar.)
                 g_ntf.swipeBlock = h;
                 g_ntf.swipeItem = NtfItemAt(g_ntf.blocks[h], y);
                 if (g_ntf.swipeItem >= 0 && g_ntf.swipeItem < (int)g_islHist.size()) g_ntf.swipeId = g_islHist[g_ntf.swipeItem].id;
@@ -22313,9 +22322,45 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     // Passou de um terço da largura: apaga só essa notificação; senão volta.
                     float w = bi < (int)g_ntf.blocks.size() ? g_ntf.blocks[bi].r.right - g_ntf.blocks[bi].r.left : 300 * g_ntf.s;
                     if (std::fabs(dx) > w * 0.33f && item >= 0 && item < (int)g_islHist.size()) {
+                        // Na pilha fechada, o próximo sobe para a frente com a mola
+                        // (de onde estava, atrás); o dispensado sai.
+                        bool stackedDel = g_ntf.stackable && !g_ntf.stackOpen;
+                        std::map<std::wstring, NtfBlock> before;
+                        if (stackedDel)
+                            for (const NtfBlock& ob : g_ntf.blocks)
+                                if ((ob.kind == 1 || ob.kind == 2) && ob.group >= 0 && ob.group < (int)g_ntf.groups.size())
+                                    before[g_ntf.groups[ob.group].app + (ob.kind == 2 ? L"\x1" : L"")] = ob;
+                        float hBefore = g_ntf.contentH;
                         g_islHist.erase(g_islHist.begin() + item);
                         g_islUnread = std::min<int>(g_islUnread, (int)g_islHist.size());
+                        g_ntfHoldRender = stackedDel;
                         NtfRefresh();
+                        g_ntfHoldRender = false;
+                        if (stackedDel && !(g_ntf.stackable && !g_ntf.stackOpen)) NtfRender();
+                        if (stackedDel && g_ntf.stackable && !g_ntf.stackOpen) {
+                            for (NtfBlock& nb : g_ntf.blocks) {
+                                nb.rsFrom = nb.rs;
+                                nb.alphaFrom = 0;
+                                nb.contentFrom = 0;
+                                if ((nb.kind == 1 || nb.kind == 2) && nb.group >= 0 && nb.group < (int)g_ntf.groups.size()) {
+                                    auto it = before.find(g_ntf.groups[nb.group].app + (nb.kind == 2 ? L"\x1" : L""));
+                                    if (it != before.end()) {
+                                        nb.rsFrom = it->second.r;
+                                        nb.alphaFrom = it->second.alpha;
+                                        nb.contentFrom = it->second.contentA;
+                                    }
+                                } else {
+                                    nb.alphaFrom = nb.alpha;
+                                    nb.contentFrom = nb.contentA;
+                                }
+                            }
+                            g_ntf.stackHFrom = hBefore;
+                            g_ntf.rotTick = GetTickCount64();
+                            NtfApplyStack();
+                            NtfGlassShapes();
+                            NtfRender();
+                            SetTimer(hwnd, 4, 10, nullptr);
+                        }
                         RedrawAll();
                     } else {
                         NtfRender();
