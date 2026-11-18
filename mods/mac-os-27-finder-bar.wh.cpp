@@ -63,14 +63,14 @@ Small glass pills drop from the bar for headphones, audio output, low battery, c
 
 ## Notifications
 
-Turn on **Windows notifications** in logo → **Menu Bar Settings…** → **Notice pills** (off by default) and the bar shows your apps' notifications:
+Turn on **Receive app notifications** in logo → **Menu Bar Settings…** → **Notice pills** → **Notifications button** (off by default) and the bar shows your apps' notifications. It works on its own: with **Show notice pills** off, notifications still go to the bell; with both on, they also drop in a pill:
 
 - in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked, the mouse wheel turns the stack to the next one, and a click spreads them into the list with an animation; scrolling, with the wheel or by dragging, piles the cards at the edges, as on Android) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
 - a round picture on each notification: the sender's photo when the app saves it on the PC with the notification (with the app's icon in the corner), otherwise the app's icon. Photos sent as web links (WhatsApp does this) aren't downloaded
 - **reply** to messages (like WhatsApp) right from the pill or from the Reply button in the panel, when the app supports replies. Your replies stay in the card until you clear it
 - new messages from the same conversation (same app and sender or group) go into the card that's already there, in order, instead of a new one
 - **drag** a notification aside in the panel to clear it
-- **Only the bar shows notifications**: optional; Windows' own banners move off the screen while the bar shows them, and come back when the option or the mod is turned off
+- **Only the bar shows notifications**: optional, with notice pills on; Windows' own banners move off the screen while the bar shows them, and come back when the option or the mod is turned off
 
 ## Bar and glass
 
@@ -13024,7 +13024,7 @@ static const BsRowDef kBsRows[] = {
     {BR_SLIDER, BV_TREACH, L"Até onde a cor desce", 0, 0, L"Valores baixos mantêm a cor perto do topo; altos a trazem para baixo"},
     {BR_ACTION, BV_THEMERESET, L"Restaurar o padrão deste tema", 0, 0, L"Volta os ajustes acima aos valores de quando o mod foi instalado"},
     {BR_HEADER, BV_NONE, L"Pílulas de aviso", 0xEA8F, 0xFF375F, L"Avisos que descem da barra e o botão de Notificações"},
-    {BR_SWITCH, BV_ISLAND, L"Mostrar avisos em pílula", 0, 0},
+    {BR_SWITCH, BV_ISLAND, L"Mostrar avisos em pílula", 0, 0, L"Só as pílulas: as notificações dos apps continuam chegando ao botão do sino"},
     {BR_ACTION, BV_ISLTEST, L"Testar a pílula agora", 0, 0},
     {BR_GROUP, BV_NONE, L"Aparência", 0, 0},
     {BR_CHOICE, BV_ISLSTYLE, L"Estilo", 0, 0, L"Acompanhar a barra: o mesmo fundo da barra (com Cor da janela, vidro; com Transparente, líquido)"},
@@ -13036,6 +13036,8 @@ static const BsRowDef kBsRows[] = {
     {BR_CHOICE, BV_ISLIN, L"Como aparece", 0, 0},
     {BR_CHOICE, BV_ISLOUT, L"Como some", 0, 0},
     {BR_GROUP, BV_NONE, L"Botão de Notificações", 0, 0},
+    {BR_SWITCH, BV_WINNOTIF, L"Receber as notificações dos apps", 0, 0, L"WhatsApp, Discord, e-mail… (experimental). Vão para o botão do sino e, com as pílulas ligadas, também para a pílula; clicar abre o app"},
+    {BR_SWITCH, BV_WINONLY, L"Somente a barra mostra as notificações", 0, 0, L"Com as pílulas ligadas: tira as faixas do Windows da tela; chamadas, alarmes e lembretes continuam"},
     {BR_CHOICE, BV_NTFLAYOUT, L"Notificações", 0, 0, L"Flutuante: o topo e cada notificação no seu próprio vidro, sem caixa atrás; dentro da caixa: tudo num painel só"},
     {BR_CHOICE, BV_NTFTEXT, L"Cor do texto das notificações", 0, 0, L"Seguir o tema, ou sempre branco ou preto, em qualquer tema"},
     {BR_ACTION, BV_NTFTEST, L"Testar notificações", 0, 0, L"Cada toque manda uma notificação de teste, de um app diferente, que fica no botão; Limpar, no painel, tira todas"},
@@ -13043,8 +13045,6 @@ static const BsRowDef kBsRows[] = {
     {BR_CHOICE, BV_NTFSHAPE, L"Formato dos ícones", 0, 0, L"Nas notificações: círculo ou o formato dos ícones do macOS"},
     {BR_ACTION, BV_ISLCLEAR, L"Limpar as notificações", 0, 0},
     {BR_GROUP, BV_NONE, L"Avisar quando", 0, 0},
-    {BR_SWITCH, BV_WINNOTIF, L"Notificações do Windows (experimental)", 0, 0, L"WhatsApp, Discord, e-mail… Clicar abre o app"},
-    {BR_SWITCH, BV_WINONLY, L"Somente a barra mostra as notificações", 0, 0, L"Tira as faixas do Windows da tela; chamadas, alarmes e lembretes continuam"},
     {BR_SWITCH, BV_CLIP, L"Texto, imagem ou arquivos copiados", 0, 0},
     {BR_SWITCH, BV_SHOT, L"Capturas e gravações de tela", 0, 0, L"Clique na pílula para abrir e editar"},
     {BR_SWITCH, BV_DLDONE, L"Downloads concluídos", 0, 0, L"Clique na pílula para abrir o arquivo"},
@@ -13905,6 +13905,8 @@ static bool BsRowShown(const BsRowDef& d) {
     if (BvIsMon(d.val)) return g_settings.barPerMon && BsMonAt(BvMonIndex(d.val), nullptr);
     if (d.val == BV_TEXTCOLOR) return !g_settings.barPerMon;
     if (d.val == BV_SELBAR2) return g_settings.selBar >= 0;  // a seleção fosca não tem degradê
+    // Tirar as faixas do Windows só faz sentido com as pílulas (que as substituem).
+    if (d.val == BV_WINONLY) return g_settings.winNotifs && g_settings.islandPills;
     if (d.val == BV_PANELSTYLE) return g_settings.panelLookCustom;
     if (d.val == BV_CLEARMENUS) return (BsBarThemes() & 0x02) != 0;  // a barra (ou um monitor) no Transparente
     if (d.val == BV_ISLLIVE) return !IslSolid();  // só com um estilo de vidro
@@ -26095,6 +26097,7 @@ const UiTr kUiTr[] = {
     {L"Vídeos e papéis de parede animados continuam aparecendo atrás do vidro", L"Videos and animated wallpapers keep showing behind the glass", L"Los vídeos y fondos animados se siguen viendo detrás del vidrio", L"Les vidéos et fonds d’écran animés restent visibles derrière le verre", L"Videos und animierte Hintergründe bleiben hinter dem Glas sichtbar", L"Video e sfondi animati restano visibili dietro il vetro", L"视频和动态壁纸仍会显示在玻璃后面"},
     {L"Pílulas de aviso", L"Notice Pills", L"Píldoras de aviso", L"Pastilles d’alerte", L"Hinweis-Pillen", L"Pillole di avviso", L"提醒胶囊"},
     {L"Avisos que descem da barra e o botão de Notificações", L"Notices that drop from the bar and the Notifications button", L"Avisos que bajan de la barra y el botón de Notificaciones", L"Alertes qui descendent de la barre et bouton Notifications", L"Hinweise, die aus der Leiste fallen, und die Mitteilungstaste", L"Avvisi che scendono dalla barra e il pulsante Notifiche", L"从菜单栏下拉的提醒和通知按钮"},
+    {L"Só as pílulas: as notificações dos apps continuam chegando ao botão do sino", L"Only the pills: app notifications still reach the bell button", L"Solo las píldoras: las notificaciones de las apps siguen llegando al botón de la campana", L"Seulement les pastilles : les notifications des apps arrivent toujours au bouton cloche", L"Nur die Pillen: App-Mitteilungen kommen weiter an der Glocke an", L"Solo le pillole: le notifiche delle app arrivano comunque al pulsante della campanella", L"仅胶囊：应用通知仍会进入铃铛按钮"},
     {L"Mostrar avisos em pílula", L"Show notice pills", L"Mostrar avisos en píldora", L"Afficher les pastilles d’alerte", L"Hinweis-Pillen anzeigen", L"Mostra avvisi a pillola", L"显示提醒胶囊"},
     {L"Segunda cor (degradê)", L"Second color (gradient)", L"Segundo color (degradado)", L"Deuxième couleur (dégradé)", L"Zweite Farbe (Verlauf)", L"Secondo colore (sfumatura)", L"第二种颜色（渐变）"},
     {L"O primeiro círculo: uma cor só; outra cor faz a seleção ir da cor de cima até ela", L"The first circle: one color; another color makes the selection go from the color above to it", L"El primer círculo: un solo color; otro color hace que la selección vaya del color de arriba a él", L"Le premier cercle : une seule couleur ; une autre couleur fait aller la sélection de la couleur du dessus jusqu’à elle", L"Der erste Kreis: eine Farbe; eine andere Farbe lässt die Auswahl von der Farbe darüber zu ihr verlaufen", L"Il primo cerchio: un solo colore; un altro colore fa andare la selezione dal colore sopra fino a esso", L"第一个圆：单色；选择其他颜色时，选中效果从上方颜色渐变到该颜色"},
@@ -26123,8 +26126,8 @@ const UiTr kUiTr[] = {
     {L"No botão, mostrar também os avisos da pílula", L"Also show the pill notices in the button", L"Mostrar también los avisos de la píldora en el botón", L"Afficher aussi les alertes des pastilles dans le bouton", L"Pillen-Hinweise auch in der Taste zeigen", L"Mostra anche gli avvisi della pillola nel pulsante", L"在按钮中也显示胶囊提醒"},
     {L"Limpar as notificações", L"Clear notifications", L"Borrar las notificaciones", L"Effacer les notifications", L"Mitteilungen löschen", L"Cancella le notifiche", L"清除通知"},
     {L"Avisar quando", L"Notify when", L"Avisar cuando", L"Alerter quand", L"Hinweis bei", L"Avvisa quando", L"在以下情况提醒"},
-    {L"Notificações do Windows (experimental)", L"Windows notifications (experimental)", L"Notificaciones de Windows (experimental)", L"Notifications Windows (expérimental)", L"Windows-Mitteilungen (experimentell)", L"Notifiche di Windows (sperimentale)", L"Windows 通知 (实验性)"},
-    {L"WhatsApp, Discord, e-mail… Clicar abre o app", L"WhatsApp, Discord, email… Clicking opens the app", L"WhatsApp, Discord, correo… Al hacer clic se abre la app", L"WhatsApp, Discord, e-mail… Un clic ouvre l’app", L"WhatsApp, Discord, E-Mail… Ein Klick öffnet die App", L"WhatsApp, Discord, e-mail… Il clic apre l’app", L"WhatsApp、Discord、电子邮件… 点击打开应用"},
+    {L"Receber as notificações dos apps", L"Receive app notifications", L"Recibir las notificaciones de las apps", L"Recevoir les notifications des apps", L"App-Mitteilungen empfangen", L"Ricevi le notifiche delle app", L"接收应用通知"},
+    {L"WhatsApp, Discord, e-mail… (experimental). Vão para o botão do sino e, com as pílulas ligadas, também para a pílula; clicar abre o app", L"WhatsApp, Discord, email… (experimental). They go to the bell button and, with pills on, to the pill too; clicking opens the app", L"WhatsApp, Discord, correo… (experimental). Van al botón de la campana y, con las píldoras activadas, también a la píldora; al hacer clic se abre la app", L"WhatsApp, Discord, e-mail… (expérimental). Elles vont au bouton cloche et, avec les pastilles activées, aussi à la pastille ; un clic ouvre l’app", L"WhatsApp, Discord, E-Mail… (experimentell). Sie gehen an die Glocke und, mit aktiven Pillen, auch an die Pille; ein Klick öffnet die App", L"WhatsApp, Discord, e-mail… (sperimentale). Vanno al pulsante della campanella e, con le pillole attive, anche alla pillola; il clic apre l’app", L"WhatsApp、Discord、电子邮件…（实验性）。通知进入铃铛按钮，开启胶囊时也会显示在胶囊中；点击打开应用"},
     {L"Texto, imagem ou arquivos copiados", L"Copied text, image or files", L"Texto, imagen o archivos copiados", L"Texte, image ou fichiers copiés", L"Kopierter Text, Bild oder Dateien", L"Testo, immagine o file copiati", L"复制的文本、图片或文件"},
     {L"Downloads concluídos", L"Finished downloads", L"Descargas completadas", L"Téléchargements terminés", L"Abgeschlossene Downloads", L"Download completati", L"下载完成"},
     {L"Clique na pílula para abrir o arquivo", L"Click the pill to open the file", L"Haz clic en la píldora para abrir el archivo", L"Cliquez sur la pastille pour ouvrir le fichier", L"Auf die Pille klicken, um die Datei zu öffnen", L"Fai clic sulla pillola per aprire il file", L"点击胶囊打开文件"},
@@ -26395,7 +26398,7 @@ const UiTr kUiTr[] = {
     {L"Linha", L"Line", L"Línea", L"Ligne", L"Linie", L"Linea", L"线条"},
     {L"Linha colorida", L"Colored line", L"Línea de color", L"Ligne colorée", L"Farbige Linie", L"Linea colorata", L"彩色线条"},
     {L"Somente a barra mostra as notificações", L"Only the bar shows notifications", L"Solo la barra muestra las notificaciones", L"Seule la barre affiche les notifications", L"Nur die Leiste zeigt Mitteilungen", L"Solo la barra mostra le notifiche", L"仅由菜单栏显示通知"},
-    {L"Tira as faixas do Windows da tela; chamadas, alarmes e lembretes continuam", L"Takes the Windows banners off the screen; calls, alarms and reminders stay", L"Quita los banners de Windows de la pantalla; las llamadas, alarmas y recordatorios se mantienen", L"Retire les bannières Windows de l’écran ; appels, alarmes et rappels restent", L"Nimmt die Windows-Banner vom Bildschirm; Anrufe, Wecker und Erinnerungen bleiben", L"Toglie i banner di Windows dallo schermo; chiamate, sveglie e promemoria restano", L"将 Windows 横幅移出屏幕; 来电、闹钟和提醒仍会显示"},
+    {L"Com as pílulas ligadas: tira as faixas do Windows da tela; chamadas, alarmes e lembretes continuam", L"With pills on: takes the Windows banners off the screen; calls, alarms and reminders stay", L"Con las píldoras activadas: quita los banners de Windows de la pantalla; las llamadas, alarmas y recordatorios se mantienen", L"Avec les pastilles activées : retire les bannières Windows de l’écran ; appels, alarmes et rappels restent", L"Mit aktiven Pillen: nimmt die Windows-Banner vom Bildschirm; Anrufe, Wecker und Erinnerungen bleiben", L"Con le pillole attive: toglie i banner di Windows dallo schermo; chiamate, sveglie e promemoria restano", L"开启胶囊时：将 Windows 横幅移出屏幕；来电、闹钟和提醒仍会显示"},
     {L"Responder", L"Reply", L"Responder", L"Répondre", L"Antworten", L"Rispondi", L"回复"},
     {L"Digite uma resposta", L"Type a reply", L"Escribe una respuesta", L"Tapez une réponse", L"Antwort eingeben", L"Scrivi una risposta", L"输入回复"},
     {L"Enviar", L"Send", L"Enviar", L"Envoyer", L"Senden", L"Invia", L"发送"},
