@@ -2,7 +2,7 @@
 // @id              mac-os-27-finder-bar
 // @name            Mac OS 27 Finder Bar
 // @description     A macOS 27-style menu bar for Windows 11: global app menus, system status, Control Center, clock and live glass
-// @version         1.1.0
+// @version         1.1.1
 // @author          Thiago Silva
 // @github          https://github.com/brideinflame-rgb
 // @homepage        https://github.com/brideinflame-rgb/Mac-OS-27-Finder-Bar
