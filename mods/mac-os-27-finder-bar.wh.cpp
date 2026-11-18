@@ -65,7 +65,7 @@ Small glass pills drop from the bar for headphones, audio output, low battery, c
 
 Turn on **Windows notifications** in logo → **Menu Bar Settings…** → **Notice pills** (off by default) and the bar shows your apps' notifications:
 
-- in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked, and a click spreads them into the list with an animation) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
+- in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked as solid cards, and a click spreads them into the glass list with an animation; scrolling, with the wheel or by dragging, piles the cards at the edges, as on Android) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
 - a round picture on each notification: the sender's photo when the app saves it on the PC with the notification (with the app's icon in the corner), otherwise the app's icon. Photos sent as web links (WhatsApp does this) aren't downloaded
 - **reply** to messages (like WhatsApp) right from the pill or from the Reply button in the panel, when the app supports replies. Your replies stay in the card until you clear it
 - new messages from the same conversation (same app and sender or group) go into the card that's already there, in order, instead of a new one
@@ -20898,6 +20898,8 @@ struct NtfBlock {
     float rsAlpha = 1, rsContent = 1;  // na pilha: a do bloco e a do conteúdo
     float alpha = 1, contentA = 1;
     int order = 0;  // a ordem na cascata (o cartão de cima é o 0)
+    float stackE = 1;     // 0 na pilha fechada, 1 na lista (os cartões sólidos viram vidro)
+    float pileDepth = 0;  // rolando: quanto o cartão entrou no monte da borda (0 = livre)
 };
 struct NtfGroup {
     std::wstring app, aumid;
@@ -20922,6 +20924,11 @@ struct NotifPanel {
     ULONGLONG stackTick = 0;         // a animação entre pilha e lista (0: parada)
     float listH = 0, stackH = 0;     // altura do conteúdo na lista e na pilha
     float listPanelBottom = 0;       // onde o painel termina com a lista aberta
+    // Rolagem suave (roda do mouse ou arrastar na vertical), com os cartões
+    // se amontoando nas bordas como no Android.
+    float scrollTarget = 0;
+    bool dragScroll = false;
+    float dragY0 = 0, dragScroll0 = 0;
     std::set<std::wstring> expanded;
     float contentH = 0, scroll = 0;
     int hover = -1;  // bloco; -2 Limpar, -3 central do Windows
@@ -21128,6 +21135,52 @@ static float NtfRowH(float s) { return 64 * s; }    // item extra num grupo aber
 // vez (cascata) com uma mola que passa um pouco e volta; os de trás aparecem
 // com o conteúdo esmaecendo. Também ajusta a altura do painel. Devolve true
 // quando a animação acabou.
+// Folga embaixo, para o último cartão sair inteiro do monte da borda.
+static float NtfPileGap() { return NtfFloating() ? 26 * g_ntf.s : 0.0f; }
+static float NtfMaxScroll() {
+    float vh = g_ntf.view.bottom - g_ntf.view.top;
+    float over = g_ntf.contentH - vh;
+    return over > 0 ? over + NtfPileGap() : 0.0f;
+}
+// Rolando a lista (solta e aberta), os cartões que passam da borda de baixo não
+// somem cortados: se amontoam nela, cada um um pouco atrás e menor que o
+// anterior, como no Android; na de cima, o mesmo. Rolar os tira do monte.
+static void NtfPile() {
+    float s = g_ntf.s;
+    bool on = NtfFloating() && (!g_ntf.stackable || (g_ntf.stackOpen && !g_ntf.stackTick));
+    float vh = g_ntf.view.bottom - g_ntf.view.top, D = 12 * s;
+    float Lb = vh - NtfPileGap() + 4 * s;                   // começa a amontoar embaixo
+    float Tt = std::min(g_ntf.scroll, 16 * s);              // e em cima (só depois de rolar)
+    struct Move { float dy, in; };
+    std::map<int, Move> byGroup;  // o chip vai junto com o seu cartão
+    for (NtfBlock& b : g_ntf.blocks) {
+        b.pileDepth = 0;
+        if (!on || (b.kind != 1 && b.kind != 4)) continue;
+        float vt = b.r.top - g_ntf.scroll, vb = b.r.bottom - g_ntf.scroll, dy = 0, x = 0;
+        if (vb > Lb) {
+            x = (vb - Lb) / D;
+            dy = Lb + D * (1 - std::exp(-x)) - vb;
+        } else if (vt < Tt) {
+            x = (Tt - vt) / D;
+            dy = Tt - D * (1 - std::exp(-x)) - vt;
+        }
+        if (x <= 0) continue;
+        float in = 14 * s * (1 - std::exp(-x * 0.6f));
+        b.pileDepth = x;
+        b.r = D2D1::RectF(b.r.left + in, b.r.top + dy, b.r.right - in, b.r.bottom + dy);
+        if (b.reply.right > b.reply.left)
+            b.reply = D2D1::RectF(b.reply.left - in, b.reply.top + dy, b.reply.right - in, b.reply.bottom + dy);
+        b.contentA *= std::clamp(1 - (x - 0.4f) * 0.8f, 0.0f, 1.0f);  // fundo do monte: só o vidro
+        b.alpha *= std::clamp(1.8f - x * 0.25f, 0.0f, 1.0f);           // bem no fundo, some
+        if (b.kind == 1) byGroup[b.group] = {dy, in};
+    }
+    for (NtfBlock& b : g_ntf.blocks)
+        if (b.kind == 2 && byGroup.count(b.group)) {
+            Move m = byGroup[b.group];
+            b.r = D2D1::RectF(b.r.left + m.in, b.r.top + m.dy, b.r.right + m.in, b.r.bottom + m.dy);
+            b.alpha = 0;  // no monte, o chip fica escondido
+        }
+}
 static float NtfEaseBack(float u) {
     const float c1 = 1.35f, c3 = c1 + 1;
     float v = u - 1;
@@ -21157,6 +21210,7 @@ static bool NtfApplyStack() {
         b.r = D2D1::RectF(lerp(b.rs.left, b.rl.left), lerp(b.rs.top, b.rl.top), lerp(b.rs.right, b.rl.right),
                           lerp(b.rs.bottom, b.rl.bottom));
         float ec = std::clamp(e, 0.0f, 1.0f);
+        b.stackE = g_ntf.stackable ? ec : 1.0f;
         b.alpha = b.rsAlpha + (1 - b.rsAlpha) * ec;
         b.contentA = b.rsContent + (1 - b.rsContent) * ec * ec;
         if (b.replyL.right > b.replyL.left) {
@@ -21176,14 +21230,16 @@ static bool NtfApplyStack() {
     if (g_ntf.H > 0) ph = std::min(ph, g_ntf.H - 2 * M);  // não passa da janela
     g_ntf.panel = D2D1::RectF(M, M, M + pw, M + ph);
     g_ntf.view = D2D1::RectF(M, M + top, M + pw, M + ph - 4 * s);
-    g_ntf.scroll = std::clamp(g_ntf.scroll, 0.0f, std::max(0.0f, g_ntf.contentH - (g_ntf.view.bottom - g_ntf.view.top)));
+    g_ntf.scroll = std::clamp(g_ntf.scroll, 0.0f, NtfMaxScroll());
+    g_ntf.scrollTarget = std::clamp(g_ntf.scrollTarget, 0.0f, NtfMaxScroll());
+    NtfPile();
     return done;
 }
 static void NtfStackToggle(bool open) {
     if (!g_ntf.stackable || g_ntf.stackOpen == open || !g_ntf.hwnd) return;
     g_ntf.stackOpen = open;
     g_ntf.stackTick = GetTickCount64();
-    g_ntf.scroll = 0;
+    g_ntf.scroll = g_ntf.scrollTarget = 0;
     g_ntf.hover = -1;
     SetTimer(g_ntf.hwnd, 4, 10, nullptr);
 }
@@ -21295,7 +21351,7 @@ static void NtfLayout() {
     float bx = NtfFloating() ? x1 - 10 * s : M + pw - 14 * s;  // soltos: a pílula tem a largura dos cartões
     g_ntf.clearBtn = D2D1::RectF(bx - 70 * s, M + by, bx, M + by + 26 * s);
     g_ntf.winBtn = D2D1::RectF(bx - 108 * s, M + by, bx - 78 * s, M + by + 26 * s);
-    g_ntf.scroll = std::clamp(g_ntf.scroll, 0.0f, std::max(0.0f, g_ntf.contentH - (g_ntf.view.bottom - g_ntf.view.top)));
+    g_ntf.scroll = std::clamp(g_ntf.scroll, 0.0f, NtfMaxScroll());
 }
 
 // O desfoque do Windows atrás do painel (temas Vidro e Cor da janela): a caixa
@@ -21549,6 +21605,7 @@ static void NtfRender() {
     std::stable_sort(drawOrder.begin(), drawOrder.end(), [](size_t a, size_t c) {
         const NtfBlock &x = g_ntf.blocks[a], &y = g_ntf.blocks[c];
         bool xc = x.kind == 1 || x.kind == 2, yc = y.kind == 1 || y.kind == 2;
+        if (x.pileDepth != y.pileDepth) return x.pileDepth > y.pileDepth;  // o fundo do monte atrás
         if (xc && yc && x.group != y.group) return x.group > y.group;
         return false;
     });
@@ -21591,6 +21648,17 @@ static void NtfRender() {
             D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 18 * s, 18 * s);
             if (floating) {
                 DrawLiquidGlass(rt, br, r, 20 * s, s, false, hot, g_ntf.glass.ok, true);
+                if (b.stackE < 0.999f) {
+                    // Empilhado: cartões sólidos, como no Android; o vidro volta ao abrir.
+                    D2D1_COLOR_F solid = ntfInk ? D2D1::ColorF(0.95f, 0.95f, 0.96f, 1) : D2D1::ColorF(0.15f, 0.15f, 0.16f, 1);
+                    if (hot) solid = ntfInk ? D2D1::ColorF(0.90f, 0.90f, 0.92f, 1) : D2D1::ColorF(0.20f, 0.20f, 0.21f, 1);
+                    solid.a = 1 - b.stackE;
+                    br->SetColor(solid);
+                    D2D1_ROUNDED_RECT sr = D2D1::RoundedRect(r, 20 * s, 20 * s);
+                    rt->FillRoundedRectangle(sr, br);
+                    br->SetColor(ntfInk ? D2D1::ColorF(0, 0, 0, 0.08f * solid.a) : D2D1::ColorF(1, 1, 1, 0.10f * solid.a));
+                    rt->DrawRoundedRectangle(sr, br, 1.0f * s);
+                }
             } else {
                 GlassCard(rt, br, rr,
                           hot ? (g_light ? D2D1::ColorF(1, 1, 1, 0.55f) : D2D1::ColorF(1, 1, 1, 0.16f))
@@ -21830,14 +21898,19 @@ static int NtfHit(float x, float y) {
     if (in(g_ntf.winBtn)) return -3;
     if (!in(g_ntf.view)) return -1;
     float cy = y - g_ntf.view.top + g_ntf.scroll;
-    // Chips por cima dos cartões.
-    for (int pass = 0; pass < 2; pass++)
+    // Chips por cima dos cartões; no monte da borda, o que está mais na frente.
+    for (int pass = 0; pass < 2; pass++) {
+        int best = -1;
         for (size_t i = 0; i < g_ntf.blocks.size(); i++) {
             const NtfBlock& b = g_ntf.blocks[i];
             if ((pass == 0) != (b.kind == 2)) continue;
             if (b.kind == 3 || b.kind == 5 || b.alpha < 0.5f) continue;
-            if (x >= b.r.left && x < b.r.right && cy >= b.r.top && cy < b.r.bottom) return (int)i;
+            if (x >= b.r.left && x < b.r.right && cy >= b.r.top && cy < b.r.bottom &&
+                (best < 0 || b.pileDepth < g_ntf.blocks[best].pileDepth))
+                best = (int)i;
         }
+        if (best >= 0) return best;
+    }
     return -1;
 }
 
@@ -21940,13 +22013,22 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 NtfGlassShapes();
                 NtfRender();
                 if (done) KillTimer(hwnd, 4);
+            } else if (wp == 5) {
+                // Rolagem suave: chega no alvo devagar, e os montes das bordas giram junto.
+                float d = g_ntf.scrollTarget - g_ntf.scroll;
+                bool end = std::fabs(d) < 0.5f;
+                g_ntf.scroll = end ? g_ntf.scrollTarget : g_ntf.scroll + d * 0.22f;
+                NtfApplyStack();
+                NtfGlassShapes();
+                NtfRender();
+                if (end) KillTimer(hwnd, 5);
             }
             return 0;
         case WM_MOUSEWHEEL: {
-            float maxS = std::max(0.0f, g_ntf.contentH - (g_ntf.view.bottom - g_ntf.view.top));
-            g_ntf.scroll = std::clamp(g_ntf.scroll - GET_WHEEL_DELTA_WPARAM(wp) / 120.0f * 60 * g_ntf.s, 0.0f, maxS);
-            NtfGlassShapes();  // em cartões soltos, o desfoque acompanha cada cartão
-            NtfRender();
+            if (g_ntf.stackable && !g_ntf.stackOpen) return 0;  // a pilha fechada não rola
+            g_ntf.scrollTarget = std::clamp(g_ntf.scrollTarget - GET_WHEEL_DELTA_WPARAM(wp) / 120.0f * 90 * g_ntf.s, 0.0f,
+                                            NtfMaxScroll());
+            SetTimer(hwnd, 5, 10, nullptr);
             return 0;
         }
         case WM_LBUTTONDOWN: {
@@ -21954,8 +22036,16 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int h = NtfHit(x, y);
             NtfSwipeReset();
             bool stacked = g_ntf.stackable && (!g_ntf.stackOpen || g_ntf.stackTick);
+            // Arrastar na vertical rola (decidido no movimento).
+            g_ntf.dragScroll = false;
+            g_ntf.dragY0 = y;
+            g_ntf.dragScroll0 = g_ntf.scroll;
+            if (!stacked && NtfMaxScroll() > 0) {
+                g_ntf.swipeX0 = x;
+                SetCapture(hwnd);
+            }
             if (h >= 0 && h < (int)g_ntf.blocks.size() && (g_ntf.blocks[h].kind == 1 || g_ntf.blocks[h].kind == 4) &&
-                !(stacked && g_ntf.blocks[h].kind == 1)) {
+                !(stacked && g_ntf.blocks[h].kind == 1) && g_ntf.blocks[h].pileDepth < 0.3f) {
                 g_ntf.swipeBlock = h;
                 g_ntf.swipeItem = NtfItemAt(g_ntf.blocks[h], y);
                 if (g_ntf.swipeItem >= 0 && g_ntf.swipeItem < (int)g_islHist.size()) g_ntf.swipeId = g_islHist[g_ntf.swipeItem].id;
@@ -21965,12 +22055,25 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_CAPTURECHANGED:
+            g_ntf.dragScroll = false;
             if (g_ntf.swiping) {
                 NtfSwipeReset();
                 NtfRender();
             }
             return 0;
         case WM_MOUSEMOVE: {
+            if ((wp & MK_LBUTTON) && GetCapture() == hwnd && !g_ntf.swiping) {
+                float dy = (float)LP_Y(lp) - g_ntf.dragY0, dx0 = (float)LP_X(lp) - g_ntf.swipeX0;
+                if (!g_ntf.dragScroll && NtfMaxScroll() > 0 && std::fabs(dy) > 8 * g_ntf.s && std::fabs(dy) > std::fabs(dx0))
+                    g_ntf.dragScroll = true;
+                if (g_ntf.dragScroll) {
+                    g_ntf.scroll = g_ntf.scrollTarget = std::clamp(g_ntf.dragScroll0 - dy, 0.0f, NtfMaxScroll());
+                    NtfApplyStack();
+                    NtfGlassShapes();
+                    NtfRender();
+                    return 0;
+                }
+            }
             if (g_ntf.swipeBlock >= 0 && (wp & MK_LBUTTON)) {
                 float dx = (float)LP_X(lp) - g_ntf.swipeX0;
                 if (!g_ntf.swiping && std::fabs(dx) > 8 * g_ntf.s) g_ntf.swiping = true;
@@ -22006,6 +22109,14 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_LBUTTONUP: {
             float x = (float)LP_X(lp), y = (float)LP_Y(lp);
+            if (g_ntf.dragScroll) {
+                // Foi uma rolagem, não um clique.
+                g_ntf.dragScroll = false;
+                NtfSwipeReset();
+                if (GetCapture() == hwnd) ReleaseCapture();
+                return 0;
+            }
+            if (GetCapture() == hwnd && g_ntf.swipeBlock < 0) ReleaseCapture();
             if (g_ntf.swipeBlock >= 0) {
                 bool swiped = g_ntf.swiping;
                 int bi = g_ntf.swipeBlock, item = -1;
@@ -22034,6 +22145,15 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             bool stackedNow = g_ntf.stackable && !g_ntf.stackOpen;
             if (h >= 0 && h < (int)g_ntf.blocks.size() && g_ntf.blocks[h].kind == 6) {
                 NtfStackToggle(false);  // Mostrar menos
+                return 0;
+            }
+            if (h >= 0 && h < (int)g_ntf.blocks.size() && g_ntf.blocks[h].pileDepth > 0.3f) {
+                // Um cartão no monte da borda: rola até ele.
+                const NtfBlock& pb = g_ntf.blocks[h];
+                float vh = g_ntf.view.bottom - g_ntf.view.top;
+                float want = pb.rl.top - g_ntf.scroll < 0 ? pb.rl.top - 8 * g_ntf.s : pb.rl.bottom - vh + NtfPileGap();
+                g_ntf.scrollTarget = std::clamp(want, 0.0f, NtfMaxScroll());
+                SetTimer(hwnd, 5, 10, nullptr);
                 return 0;
             }
             if (stackedNow && h >= 0 && h < (int)g_ntf.blocks.size() &&
@@ -22082,7 +22202,9 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd, 2);
             KillTimer(hwnd, 3);
             KillTimer(hwnd, 4);
+            KillTimer(hwnd, 5);
             g_ntf.stackTick = 0;
+            g_ntf.dragScroll = false;
             GlassLayerDestroy(g_ntf.glass);
             NtfReleaseGraphics();
             for (IDWriteTextFormat** f : {&g_ntf.fHead, &g_ntf.fApp, &g_ntf.fTitle, &g_ntf.fBody, &g_ntf.fSmall, &g_ntf.fIcon, &g_ntf.fAvatar})
@@ -22121,6 +22243,7 @@ static void NtfToggle(Bar* b, int idx) {
     g_ntf.hover = -1;
     g_ntf.stackOpen = false;  // abre na pilha
     g_ntf.stackTick = 0;
+    g_ntf.scrollTarget = 0;
     g_ntf.H = 0;
     NtfBuildGroups();
     NtfLayout();
