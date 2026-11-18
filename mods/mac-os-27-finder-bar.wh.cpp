@@ -43,7 +43,7 @@ Available in English, Português, Español, Français, Deutsch, Italiano and 中
 - Keyboard layout (when there is more than one), emoji, on-screen keyboard
 - **Battery** (percentage, charging, time remaining), **Wi-Fi** (current network, available and known networks), **Bluetooth** and **Sound** (scroll on the icon to change the volume, right-click to mute, switch output and input)
 - **Now Playing**: the song name scrolls across the bar when it doesn't fit; its bar icon is a thin circle with a rounded play or pause sign; the panel has a large-cover, compact or full-cover layout (the cover fills the panel, with glass buttons on top, white ones in light glass themes) and a progress bar drawn as a line, a colored line or a wave
-- **Focus** (when Do Not Disturb is on), **Search** (Windows Search or Siri Plus Launchpad), **microphone and camera** (the icons turn orange and green while an app uses them, as on the Mac; click to see which apps use them and mute the microphone), **Weather** (Open-Meteo, MET Norway or wttr.in, no account needed; the widget is colored, liquid glass or plain glass, and its animations can be turned off) and the **Notifications** button
+- **Focus** (when Do Not Disturb is on), **Search** (Windows Search or Siri Plus Launchpad), **microphone and camera** (the icons turn orange and green while an app uses them, as on the Mac; click to see which apps use them and mute the microphone), **Weather** (Open-Meteo, MET Norway or wttr.in, no account needed; the widget is colored, liquid glass or plain glass, and its animations can be turned off) and the **Notifications** button (the bell turns red when a notification arrives)
 - **Clock**: the calendar and your agenda from your own .ics files, imported right from the settings window. Date and time formats are configurable
 - An arrow collapses the icons that don't fit; each icon can be turned on or off in the settings
 
@@ -65,7 +65,7 @@ Small glass pills drop from the bar for headphones, audio output, low battery, c
 
 Turn on **Windows notifications** in logo → **Menu Bar Settings…** → **Notice pills** (off by default) and the bar shows your apps' notifications:
 
-- in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
+- in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked, and a click spreads them into the list with an animation) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
 - a round picture on each notification: the sender's photo when the app saves it on the PC with the notification (with the app's icon in the corner), otherwise the app's icon. Photos sent as web links (WhatsApp does this) aren't downloaded
 - **reply** to messages (like WhatsApp) right from the pill or from the Reply button in the panel, when the app supports replies. Your replies stay in the card until you clear it
 - new messages from the same conversation (same app and sender or group) go into the card that's already there, in order, instead of a new one
@@ -20886,11 +20886,18 @@ static void NotifOnMsg(NotifMsg* m) {
 
 static const wchar_t kNtfClass[] = L"WhFinderTopBarNotifs";
 struct NtfBlock {
-    int kind;        // 1 cartão (com o app dentro), 2 chip "+N", 3 título "Avisos", 4 linha de aviso, 5 vazio
+    int kind;        // 1 cartão (com o app dentro), 2 chip "+N", 3 título "Avisos", 4 linha de aviso, 5 vazio,
+                     // 6 "Mostrar menos" (volta para a pilha)
     D2D1_RECT_F r;   // em coordenadas do conteúdo
     int group = -1;
     std::vector<int> items;  // índices em g_islHist (o primeiro é o mais novo)
     D2D1_RECT_F reply{};     // cartão: o botão Responder (vazio se não dá para responder)
+    // Pilha (flutuante, com 3 ou mais apps): onde fica na lista (rl) e na pilha
+    // (rs); r, a opacidade e a do conteúdo saem da animação entre as duas.
+    D2D1_RECT_F rl{}, rs{}, replyL{};
+    float rsAlpha = 1, rsContent = 1;  // na pilha: a do bloco e a do conteúdo
+    float alpha = 1, contentA = 1;
+    int order = 0;  // a ordem na cascata (o cartão de cima é o 0)
 };
 struct NtfGroup {
     std::wstring app, aumid;
@@ -20910,6 +20917,11 @@ struct NotifPanel {
     std::vector<NtfBlock> blocks;
     bool compact = false;  // vazio: o painel pequeno, num cartão só
     std::vector<D2D1_RECT_F> glassRects;  // onde está cada vidro do desfoque (para a animação)
+    // Muitas notificações (soltas): empilhadas como no Android; um clique abre a lista.
+    bool stackable = false, stackOpen = false;
+    ULONGLONG stackTick = 0;         // a animação entre pilha e lista (0: parada)
+    float listH = 0, stackH = 0;     // altura do conteúdo na lista e na pilha
+    float listPanelBottom = 0;       // onde o painel termina com a lista aberta
     std::set<std::wstring> expanded;
     float contentH = 0, scroll = 0;
     int hover = -1;  // bloco; -2 Limpar, -3 central do Windows
@@ -21112,12 +21124,86 @@ static float NtfRepliesH(int histIdx, float s) {
 }
 static float NtfRowH(float s) { return 64 * s; }    // item extra num grupo aberto
 
+// Onde cada bloco está agora, entre a pilha e a lista: cada cartão sai na sua
+// vez (cascata) com uma mola que passa um pouco e volta; os de trás aparecem
+// com o conteúdo esmaecendo. Também ajusta a altura do painel. Devolve true
+// quando a animação acabou.
+static float NtfEaseBack(float u) {
+    const float c1 = 1.35f, c3 = c1 + 1;
+    float v = u - 1;
+    return 1 + c3 * v * v * v + c1 * v * v;
+}
+static bool NtfApplyStack() {
+    float s = g_ntf.s, M = g_ntf.M;
+    bool done = true;
+    int maxOrder = 0;
+    for (const NtfBlock& b : g_ntf.blocks) maxOrder = std::max(maxOrder, std::min(b.order, 8));
+    float frontE = g_ntf.stackOpen ? 1.0f : 0.0f;
+    for (NtfBlock& b : g_ntf.blocks) {
+        float e;  // 0 = na pilha, 1 = na lista
+        if (!g_ntf.stackable) e = 1;
+        else if (!g_ntf.stackTick) e = g_ntf.stackOpen ? 1.0f : 0.0f;
+        else {
+            float ms = (float)(GetTickCount64() - g_ntf.stackTick);
+            int ord = std::min(b.order, 8);
+            if (!g_ntf.stackOpen) ord = maxOrder - ord;  // fechando: os de baixo voltam primeiro
+            float u = std::clamp((ms - 32.0f * ord) / 440.0f, 0.0f, 1.0f);
+            if (u < 1) done = false;
+            float k = NtfEaseBack(u);
+            e = g_ntf.stackOpen ? k : 1 - k;
+            if (b.kind == 1 && b.order == 0) frontE = std::clamp(e, 0.0f, 1.0f);
+        }
+        auto lerp = [&](float a, float c) { return a + (c - a) * e; };
+        b.r = D2D1::RectF(lerp(b.rs.left, b.rl.left), lerp(b.rs.top, b.rl.top), lerp(b.rs.right, b.rl.right),
+                          lerp(b.rs.bottom, b.rl.bottom));
+        float ec = std::clamp(e, 0.0f, 1.0f);
+        b.alpha = b.rsAlpha + (1 - b.rsAlpha) * ec;
+        b.contentA = b.rsContent + (1 - b.rsContent) * ec * ec;
+        if (b.replyL.right > b.replyL.left) {
+            float dx = b.r.right - b.rl.right, dy = b.r.bottom - b.rl.bottom;
+            b.reply = D2D1::RectF(b.replyL.left + dx, b.replyL.top + dy, b.replyL.right + dx, b.replyL.bottom + dy);
+        }
+    }
+    if (done) g_ntf.stackTick = 0;
+    // O painel cresce (ou encolhe) com o cartão de cima.
+    g_ntf.contentH = g_ntf.stackable ? g_ntf.stackH + (g_ntf.listH - g_ntf.stackH) * frontE : g_ntf.listH;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    float maxH = 640 * s;
+    if (g_ntf.bar && GetMonitorInfoW(g_ntf.bar->monitor, &mi)) maxH = (mi.rcWork.bottom - mi.rcWork.top) * 0.75f;
+    float top = 52 * s, pw = 360 * s;
+    float ph = std::min(maxH, top + g_ntf.contentH + 4 * s);
+    if (g_ntf.H > 0) ph = std::min(ph, g_ntf.H - 2 * M);  // não passa da janela
+    g_ntf.panel = D2D1::RectF(M, M, M + pw, M + ph);
+    g_ntf.view = D2D1::RectF(M, M + top, M + pw, M + ph - 4 * s);
+    g_ntf.scroll = std::clamp(g_ntf.scroll, 0.0f, std::max(0.0f, g_ntf.contentH - (g_ntf.view.bottom - g_ntf.view.top)));
+    return done;
+}
+static void NtfStackToggle(bool open) {
+    if (!g_ntf.stackable || g_ntf.stackOpen == open || !g_ntf.hwnd) return;
+    g_ntf.stackOpen = open;
+    g_ntf.stackTick = GetTickCount64();
+    g_ntf.scroll = 0;
+    g_ntf.hover = -1;
+    SetTimer(g_ntf.hwnd, 4, 10, nullptr);
+}
+
 static void NtfLayout() {
     float s = g_ntf.s, M = g_ntf.M;
     float pw = 360 * s;
     float x0 = M + 12 * s, x1 = M + pw - 12 * s;
     g_ntf.blocks.clear();
     float y = 0;
+    // Três apps ou mais, soltos: a pilha. Na lista aberta, "Mostrar menos" no alto.
+    g_ntf.stackable = g_settings.ntfCards && g_ntf.groups.size() >= 3;
+    if (!g_ntf.stackable) g_ntf.stackOpen = false;
+    if (g_ntf.stackable) {
+        NtfBlock hb{6, D2D1::RectF(x1 - 132 * s, 0, x1, 30 * s), -1, {}};
+        hb.rsAlpha = 0;
+        g_ntf.blocks.push_back(hb);
+        y += 38 * s;
+    }
+    float frontH = 0;
     for (size_t gi = 0; gi < g_ntf.groups.size(); gi++) {
         const NtfGroup& g = g_ntf.groups[gi];
         // O ícone e o nome do app ficam dentro do cartão, na linha da hora.
@@ -21128,11 +21214,28 @@ static void NtfLayout() {
                   (extra > 0 || canReply ? 34 * s : 0);
         NtfBlock card{1, D2D1::RectF(x0, y, x1, y + h), (int)gi, g.items};
         if (canReply) card.reply = D2D1::RectF(x1 - 12 * s - 104 * s, y + h - 32 * s, x1 - 12 * s, y + h - 8 * s);
+        card.order = (int)gi;
+        // Na pilha: o de cima inteiro; os dois de trás, menores e um pouco abaixo,
+        // aparecendo só pela borda de baixo (sem o conteúdo); o resto some atrás.
+        if (gi == 0) frontH = h;
+        int d = (int)std::min<size_t>(gi, 2);
+        float in = 11 * s * d, drop = 9 * s * d;
+        card.rs = gi == 0 ? D2D1::RectF(x0, 0, x1, h) : D2D1::RectF(x0 + in, drop, x1 - in, frontH + drop);
+        card.rsAlpha = gi <= 2 ? 1.0f : 0.0f;
+        card.rsContent = gi == 0 ? 1.0f : 0.0f;
         g_ntf.blocks.push_back(card);
-        if (extra > 0)
-            g_ntf.blocks.push_back({2, D2D1::RectF(x0 + 12 * s, y + h - 32 * s, x0 + 12 * s + 150 * s, y + h - 8 * s), (int)gi, {}});
+        if (extra > 0) {
+            NtfBlock chip{2, D2D1::RectF(x0 + 12 * s, y + h - 32 * s, x0 + 12 * s + 150 * s, y + h - 8 * s), (int)gi, {}};
+            float dy = card.rs.top - y;
+            chip.rs = D2D1::RectF(chip.r.left, chip.r.top + dy, chip.r.right, chip.r.bottom + dy);
+            chip.rsAlpha = gi == 0 ? 1.0f : 0.0f;
+            chip.order = (int)gi;
+            g_ntf.blocks.push_back(chip);
+        }
         y += h + 12 * s;
     }
+    size_t cardsEnd = g_ntf.blocks.size();
+    float stackShift = g_ntf.stackable ? frontH + 9 * s * 2 + 14 * s - y : 0;
     // Vazio (sem notificações e sem avisos para mostrar): o painel pequeno.
     g_ntf.compact = g_ntf.groups.empty();
     if (g_settings.islHistNotices)
@@ -21169,16 +21272,25 @@ static void NtfLayout() {
             y += h + 12 * s;
         }
     }
-    g_ntf.contentH = y;
-    // Altura: até 75% da tela; o resto rola.
-    MONITORINFO mi{};
-    mi.cbSize = sizeof(mi);
-    float maxH = 640 * s;
-    if (g_ntf.bar && GetMonitorInfoW(g_ntf.bar->monitor, &mi)) maxH = (mi.rcWork.bottom - mi.rcWork.top) * 0.75f;
-    float top = 52 * s;
-    float ph = std::min(maxH, top + y + 4 * s);
-    g_ntf.panel = D2D1::RectF(M, M, M + pw, M + ph);
-    g_ntf.view = D2D1::RectF(M, M + top, M + pw, M + ph - 4 * s);
+    // Os blocos de baixo (avisos) sobem junto quando a pilha fecha.
+    for (size_t i = 0; i < g_ntf.blocks.size(); i++) {
+        NtfBlock& b = g_ntf.blocks[i];
+        b.rl = b.r;
+        b.replyL = b.reply;
+        if (!g_ntf.stackable) b.rs = b.r;
+        else if (i >= cardsEnd) b.rs = D2D1::RectF(b.r.left, b.r.top + stackShift, b.r.right, b.r.bottom + stackShift);
+        if (b.kind == 6) b.rs = b.r;
+    }
+    g_ntf.listH = y;
+    g_ntf.stackH = y + stackShift;
+    {
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        float maxH = 640 * s;
+        if (g_ntf.bar && GetMonitorInfoW(g_ntf.bar->monitor, &mi)) maxH = (mi.rcWork.bottom - mi.rcWork.top) * 0.75f;
+        g_ntf.listPanelBottom = M + std::min(maxH, 52 * s + y + 4 * s);
+    }
+    NtfApplyStack();
     float by = (NtfFloating() ? 10 : 14) * s;  // centrados na pílula do topo
     float bx = NtfFloating() ? x1 - 10 * s : M + pw - 14 * s;  // soltos: a pílula tem a largura dos cartões
     g_ntf.clearBtn = D2D1::RectF(bx - 70 * s, M + by, bx, M + by + 26 * s);
@@ -21203,7 +21315,9 @@ static void NtfGlassShapes() {
     for (const NtfBlock& b : g_ntf.blocks) {
         D2D1_RECT_F r = D2D1::RectF(b.r.left, b.r.top + oy, b.r.right, b.r.bottom + oy);
         float rad;
+        if (b.alpha < 0.05f) continue;  // escondido atrás da pilha
         if (b.kind == 1) rad = 20 * s;
+        else if (b.kind == 6) rad = (r.bottom - r.top) / 2;
         else if (b.kind == 4) {
             r.top += 2 * s;
             r.bottom -= 2 * s;
@@ -21278,6 +21392,23 @@ static void NtfDrawText(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* br, const s
     l->Release();
 }
 
+// Uma camada com opacidade (só quando precisa).
+struct NtfAlphaScope {
+    ID2D1RenderTarget* rt;
+    ID2D1Layer* layer = nullptr;
+    NtfAlphaScope(ID2D1RenderTarget* t, bool on, float a) : rt(t) {
+        if (on && SUCCEEDED(rt->CreateLayer(&layer)))
+            rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                D2D1::IdentityMatrix(), std::clamp(a, 0.0f, 1.0f)),
+                          layer);
+    }
+    ~NtfAlphaScope() {
+        if (layer) {
+            rt->PopLayer();
+            layer->Release();
+        }
+    }
+};
 static void NtfRender() {
     if (!g_ntf.hwnd) return;
     PanelThemeScope panelTheme;  // o vidro é o da Central (não o dos menus)
@@ -21411,10 +21542,22 @@ static void NtfRender() {
     // Conteúdo rolável.
     rt->PushAxisAlignedClip(g_ntf.view, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     float oy = g_ntf.view.top - g_ntf.scroll;
-    for (size_t bi = 0; bi < g_ntf.blocks.size(); bi++) {
+    // Os cartões de baixo primeiro (na pilha, os de trás ficam atrás), e cada chip
+    // logo depois do seu cartão.
+    std::vector<size_t> drawOrder;
+    for (size_t i = 0; i < g_ntf.blocks.size(); i++) drawOrder.push_back(i);
+    std::stable_sort(drawOrder.begin(), drawOrder.end(), [](size_t a, size_t c) {
+        const NtfBlock &x = g_ntf.blocks[a], &y = g_ntf.blocks[c];
+        bool xc = x.kind == 1 || x.kind == 2, yc = y.kind == 1 || y.kind == 2;
+        if (xc && yc && x.group != y.group) return x.group > y.group;
+        return false;
+    });
+    for (size_t bi : drawOrder) {
         const NtfBlock& b = g_ntf.blocks[bi];
         D2D1_RECT_F r = D2D1::RectF(b.r.left, b.r.top + oy, b.r.right, b.r.bottom + oy);
         if (r.bottom < g_ntf.view.top - 4 || r.top > g_ntf.view.bottom + 4) continue;
+        if (b.alpha < 0.01f) continue;
+        NtfAlphaScope fade(rt, b.alpha < 0.999f, b.alpha);
         // O cartão sendo arrastado: vai junto com o mouse e esmaece.
         struct SwipeScope {
             ID2D1RenderTarget* rt;
@@ -21456,6 +21599,9 @@ static void NtfRender() {
                 br->SetColor(g_light ? D2D1::ColorF(1, 1, 1, 0.85f) : D2D1::ColorF(1, 1, 1, 0.30f));
                 rt->DrawRoundedRectangle(rr, br, 1.2f * s);
             }
+            // Atrás na pilha, o cartão é só o vidro; o conteúdo aparece ao abrir.
+            NtfAlphaScope contentFade(rt, b.contentA < 0.999f, b.contentA);
+            if (b.contentA > 0.02f) {
             bool open = g_ntf.expanded.count(g.app) > 0;
             size_t n = open ? b.items.size() : 1;
             float y = r.top + 10 * s;
@@ -21581,6 +21727,22 @@ static void NtfRender() {
                     l->Release();
                 }
             }
+            }  // conteúdo
+        } else if (b.kind == 6) {
+            // "Mostrar menos": volta para a pilha.
+            DrawLiquidGlass(rt, br, r, (r.bottom - r.top) / 2, s, false, hot, g_ntf.glass.ok, true);
+            std::wstring t = std::wstring(L"\xE70E  ") + T(L"Mostrar menos");
+            IDWriteTextLayout* l = nullptr;
+            if (SUCCEEDED(g_dwrite->CreateTextLayout(t.c_str(), (UINT32)t.size(), g_ntf.fSmall, r.right - r.left, r.bottom - r.top, &l))) {
+                l->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                l->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                DWRITE_TEXT_RANGE glyph = {0, 1};
+                l->SetFontFamilyName(g_iconFont.c_str(), glyph);
+                l->SetFontSize(10 * s, glyph);
+                br->SetColor(fg);
+                rt->DrawTextLayout(D2D1::Point2F(r.left, r.top), l, br);
+                l->Release();
+            }
         } else if (b.kind == 2) {
             // Chip "+N notificações" / "Mostrar menos".
             const NtfGroup& g = g_ntf.groups[b.group];
@@ -21673,7 +21835,7 @@ static int NtfHit(float x, float y) {
         for (size_t i = 0; i < g_ntf.blocks.size(); i++) {
             const NtfBlock& b = g_ntf.blocks[i];
             if ((pass == 0) != (b.kind == 2)) continue;
-            if (b.kind == 3 || b.kind == 5) continue;
+            if (b.kind == 3 || b.kind == 5 || b.alpha < 0.5f) continue;
             if (x >= b.r.left && x < b.r.right && cy >= b.r.top && cy < b.r.bottom) return (int)i;
         }
     return -1;
@@ -21772,6 +21934,12 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (wp == 3) {
                 NtfRender();
                 if (GetTickCount64() - g_ntf.openTick > 420) KillTimer(hwnd, 3);
+            } else if (wp == 4) {
+                // Pilha ↔ lista.
+                bool done = NtfApplyStack();
+                NtfGlassShapes();
+                NtfRender();
+                if (done) KillTimer(hwnd, 4);
             }
             return 0;
         case WM_MOUSEWHEEL: {
@@ -21785,7 +21953,9 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             float x = (float)LP_X(lp), y = (float)LP_Y(lp);
             int h = NtfHit(x, y);
             NtfSwipeReset();
-            if (h >= 0 && h < (int)g_ntf.blocks.size() && (g_ntf.blocks[h].kind == 1 || g_ntf.blocks[h].kind == 4)) {
+            bool stacked = g_ntf.stackable && (!g_ntf.stackOpen || g_ntf.stackTick);
+            if (h >= 0 && h < (int)g_ntf.blocks.size() && (g_ntf.blocks[h].kind == 1 || g_ntf.blocks[h].kind == 4) &&
+                !(stacked && g_ntf.blocks[h].kind == 1)) {
                 g_ntf.swipeBlock = h;
                 g_ntf.swipeItem = NtfItemAt(g_ntf.blocks[h], y);
                 if (g_ntf.swipeItem >= 0 && g_ntf.swipeItem < (int)g_islHist.size()) g_ntf.swipeId = g_islHist[g_ntf.swipeItem].id;
@@ -21861,6 +22031,16 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
             int h = NtfHit(x, y);
+            bool stackedNow = g_ntf.stackable && !g_ntf.stackOpen;
+            if (h >= 0 && h < (int)g_ntf.blocks.size() && g_ntf.blocks[h].kind == 6) {
+                NtfStackToggle(false);  // Mostrar menos
+                return 0;
+            }
+            if (stackedNow && h >= 0 && h < (int)g_ntf.blocks.size() &&
+                (g_ntf.blocks[h].kind == 1 || g_ntf.blocks[h].kind == 2) && !NtfOnReply(h, x, y)) {
+                NtfStackToggle(true);  // um clique na pilha abre a lista
+                return 0;
+            }
             if (h == -2) {
                 g_islHist.clear();
                 g_islUnread = 0;
@@ -21901,6 +22081,8 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             KillTimer(hwnd, 2);
             KillTimer(hwnd, 3);
+            KillTimer(hwnd, 4);
+            g_ntf.stackTick = 0;
             GlassLayerDestroy(g_ntf.glass);
             NtfReleaseGraphics();
             for (IDWriteTextFormat** f : {&g_ntf.fHead, &g_ntf.fApp, &g_ntf.fTitle, &g_ntf.fBody, &g_ntf.fSmall, &g_ntf.fIcon, &g_ntf.fAvatar})
@@ -21937,11 +22119,15 @@ static void NtfToggle(Bar* b, int idx) {
     g_ntf.M = std::round(24 * g_ntf.s);
     g_ntf.scroll = 0;
     g_ntf.hover = -1;
+    g_ntf.stackOpen = false;  // abre na pilha
+    g_ntf.stackTick = 0;
+    g_ntf.H = 0;
     NtfBuildGroups();
     NtfLayout();
     float s = g_ntf.s;
     g_ntf.W = (int)std::ceil(g_ntf.panel.right + g_ntf.M);
-    g_ntf.H = (int)std::ceil(g_ntf.panel.bottom + g_ntf.M);
+    // A janela já tem a altura da lista aberta (a pilha cresce dentro dela).
+    g_ntf.H = (int)std::ceil(std::max(g_ntf.panel.bottom, g_ntf.listPanelBottom) + g_ntf.M);
     // Folga para crescer se chegar notificação com o painel aberto.
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
@@ -23315,13 +23501,13 @@ static void Render(Bar* b) {
                 b->brush->SetColor(fg);
                 continue;
             }
-            if (p.spec.kind == K_NOTIF && g_islUnread > 0 && !shadowPass) {
-                // Ponto vermelho: avisos que ainda não foram vistos.
-                float is = s * g_settings.iconScale;
-                float cx = (p.l + p.r) / 2 + 6 * is, cy = h / 2 - 6 * is;
-                b->brush->SetColor(D2D1::ColorF(1.0f, 0.23f, 0.19f, 1));
-                b->rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 2.8f * is, 2.8f * is), b->brush);
+            if (p.spec.kind == K_NOTIF && g_islUnread > 0) {
+                // Notificação não vista: o próprio sino fica vermelho, como o
+                // microfone e a câmera em uso (a sombra não).
+                b->brush->SetColor(shadowPass ? fg : D2D1::ColorF(1.0f, 0.27f, 0.23f, 1));
+                BarGlyph(b, (wchar_t)0xEA8F, std::round((p.l + p.r) / 2), h / 2, s);
                 b->brush->SetColor(fg);
+                continue;
             }
             if (p.spec.kind == K_MORE) {
                 // Seta: ‹ mostra os ícones escondidos, › recolhe.
