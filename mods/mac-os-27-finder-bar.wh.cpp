@@ -358,6 +358,7 @@ struct Settings {
     DWORD tintColor;          // Vidro líquido personalizado: a cor (0xRRGGBB)
     int tintLevel, tintReach;  // força da cor no topo e até onde ela desce (%)
     int selBar;  // cor da seleção (barra, menus e pílulas): índice em kSelPalette, -1 = fosca
+    int selBar2 = -1;  // segunda cor (degradê da esquerda para a direita): -1 = sem degradê
     int searchTarget;     // ícone de busca: 0 pesquisa do Windows, 1 Siri Plus Launchpad
     int openAnim;  // 0 nenhuma, 1 esmaecer, 2 cascata
     int ntfIconShape;  // ícones das notificações: 0 círculo, 1 formato macOS (squircle)
@@ -396,6 +397,38 @@ static bool SelColor(D2D1_COLOR_F* c, bool* darkText = nullptr) {
     *c = D2D1::ColorF(((v >> 16) & 255) / 255.0f, ((v >> 8) & 255) / 255.0f, (v & 255) / 255.0f, 1.0f);
     if (darkText) *darkText = v == 0xFFD60A;
     return true;
+}
+// A segunda cor da seleção (o degradê), se houver.
+static bool SelColor2(D2D1_COLOR_F* c) {
+    int i = g_settings.selBar2;
+    if (g_settings.selBar < 0 || i < 0 || i >= kSelCount || i == g_settings.selBar) return false;
+    DWORD v = kSelPalette[i].rgb;
+    *c = D2D1::ColorF(((v >> 16) & 255) / 255.0f, ((v >> 8) & 255) / 255.0f, (v & 255) / 255.0f, 1.0f);
+    return true;
+}
+// Pinta uma seleção (pílula ou faixa arredondada) na cor escolhida, ou no degradê
+// das duas cores, da esquerda para a direita. alpha: a opacidade.
+static void SelFill(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* br, const D2D1_ROUNDED_RECT& rr, D2D1_COLOR_F c1,
+                    float alpha) {
+    D2D1_COLOR_F c2;
+    if (SelColor2(&c2)) {
+        c1.a = c2.a = alpha;
+        D2D1_GRADIENT_STOP stops[2] = {{0.0f, c1}, {1.0f, c2}};
+        ID2D1GradientStopCollection* sc = nullptr;
+        ID2D1LinearGradientBrush* lg = nullptr;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &sc)) &&
+            SUCCEEDED(rt->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(rr.rect.left, 0), D2D1::Point2F(rr.rect.right, 0)), sc, &lg))) {
+            rt->FillRoundedRectangle(rr, lg);
+            lg->Release();
+            sc->Release();
+            return;
+        }
+        if (sc) sc->Release();
+    }
+    c1.a = alpha;
+    br->SetColor(c1);
+    rt->FillRoundedRectangle(rr, br);
 }
 // A cor de destaque dos menus e das pílulas (interruptores ligados, controles):
 // a cor da seleção da barra; com a seleção fosca, a cor de destaque da Central.
@@ -557,6 +590,7 @@ static const UiDefault kUiDefaults[] = {
     {L"tintLevel", L"100"},
     {L"tintReach", L"29"},
     {L"selectionBar", L"blue"},
+    {L"selectionBar2", L"none"},
     {L"allMonitors", L"1"},
     {L"autoHide", L"0"},
     {L"hideOnFullscreen", L"1"},
@@ -912,6 +946,10 @@ static void LoadSettings() {
         s.tintReach = std::clamp(OvrInt(L"tintReach"), 0, 100);
     }
     s.selBar = SelIndex(OvrStr(L"selectionBar"));
+    {
+        std::wstring v2 = OvrStr(L"selectionBar2");
+        s.selBar2 = v2.empty() || v2 == L"none" ? -1 : SelIndex(v2);
+    }
     s.searchTarget = OvrStr(L"searchTarget") == L"siri" ? 1 : 0;
     SetUiLangChoice(OvrStr(L"language"));
     {
@@ -9116,8 +9154,7 @@ static void GmRender(GmLevel* lv) {
             if (selColored) {
                 // Destaque na cor escolhida, com a luz de vidro por cima.
                 D2D1_ROUNDED_RECT hr = D2D1::RoundedRect(r, 7 * s, 7 * s);
-                br->SetColor(D2D1::ColorF(selC.r, selC.g, selC.b, 0.92f));
-                rt->FillRoundedRectangle(hr, br);
+                SelFill(rt, br, hr, selC, 0.92f);
                 GlassCardLight(rt, hr, 0.22f, s);
             } else if (hot) {
                 // Seleção fosca: um vidro mais claro, o texto continua na cor normal.
@@ -12867,7 +12904,7 @@ enum BsVal {
     BV_ISLPOS, BV_ISLTEST, BV_NTFTEST, BV_ISLCLEAR, BV_NPLAYOUT, BV_NPSIZE, BV_WINNOTIF, BV_WINONLY, BV_ISLHISTNOT,
     BV_WXPROV, BV_WXUNIT, BV_WXLOOK, BV_WXANIM, BV_WXGLASS, BV_WXINT, BV_WXTEMP, BV_WXPLACE, BV_WXNOW, BV_WXRESULT,
     BV_BATTPCT, BV_HIDEFS, BV_OSD, BV_DIM,
-    BV_G_REFRACT, BV_G_BLUR, BV_G_LIVE, BV_WEATHER, BV_BARSTYLE, BV_HEIGHT, BV_FONT, BV_BSSTYLE, BV_BSTRANSP, BV_SELBAR, BV_UPDATES,
+    BV_G_REFRACT, BV_G_BLUR, BV_G_LIVE, BV_WEATHER, BV_BARSTYLE, BV_HEIGHT, BV_FONT, BV_BSSTYLE, BV_BSTRANSP, BV_SELBAR, BV_SELBAR2, BV_UPDATES,
     BV_G_TINT, BV_SEARCHTGT, BV_LANG, BV_NPBAR, BV_ICSADD, BV_ICSCLEAR,
     BV_TCOLOR, BV_TLEVEL, BV_TREACH, BV_CCCLOSE, BV_NTFSHAPE, BV_TEXTCOLOR, BV_DISK, BV_BARMON, BV_HIDEMAX, BV_HANDLE,
     BV_THEMEHEAD, BV_TGROUP, BV_THEMENONE, BV_THEMERESET,  // Personalizar tema
@@ -12949,6 +12986,7 @@ static const BsRowDef kBsRows[] = {
     {BR_CHOICE, BV_MONTEXT0 + 7, L"Cor do texto e dos ícones", 0, 0},
     {BR_GROUP, BV_NONE, L"Seleção na barra", 0, 0},
     {BR_COLORS, BV_SELBAR, L"Cor da pílula de seleção na barra", 0, 0, L"Vale também para a seleção e os interruptores dos menus e das pílulas"},
+    {BR_COLORS, BV_SELBAR2, L"Segunda cor (degradê)", 0, 0, L"O primeiro círculo: uma cor só; outra cor faz a seleção ir da cor de cima até ela"},
     {BR_GROUP, BV_NONE, L"Tamanho da barra", 0, 0},
     {BR_SLIDER, BV_HEIGHT, L"Altura da barra", 0, 0, L"Só a altura: do topo da tela até a borda de baixo da barra"},
     {BR_SLIDER, BV_FONT, L"Tamanho dos ícones e da fonte", 0, 0, L"Ícones e texto crescem e diminuem juntos, na mesma proporção"},
@@ -13321,6 +13359,7 @@ static int BsGet(int val) {
         case BV_WXPROV: case BV_WXUNIT: case BV_WXLOOK: case BV_WXANIM: case BV_WXGLASS: case BV_WXINT: case BV_WXTEMP:
             return WxSettingGet(val);
         case BV_SELBAR: return g_settings.selBar;
+        case BV_SELBAR2: return g_settings.selBar2;
         case BV_BSTRANSP: return g_bsTransp;
         case BV_HEIGHT: return std::clamp((g_settings.height - 20) * 100 / 28, 0, 100);
         case BV_FONT: return std::clamp((int)std::lround((g_settings.fontSize - 10) * 10), 0, 100);
@@ -13439,6 +13478,13 @@ static void BsSet(int val, int v) {
     if (val == BV_SEARCHTGT) {
         g_settings.searchTarget = v == 1 ? 1 : 0;
         OvrSetStr(L"searchTarget", g_settings.searchTarget ? L"siri" : L"windows");
+        return;
+    }
+    if (val == BV_SELBAR2) {
+        int idx = v < 0 || v >= kSelCount ? -1 : v;
+        g_settings.selBar2 = idx;
+        OvrSetStr(L"selectionBar2", idx < 0 ? L"none" : kSelPalette[idx].key);
+        RedrawAll();
         return;
     }
     if (val == BV_SELBAR) {
@@ -13858,6 +13904,7 @@ static const unsigned kThemeTinted = 0x08;   // personalizado
 static bool BsRowShown(const BsRowDef& d) {
     if (BvIsMon(d.val)) return g_settings.barPerMon && BsMonAt(BvMonIndex(d.val), nullptr);
     if (d.val == BV_TEXTCOLOR) return !g_settings.barPerMon;
+    if (d.val == BV_SELBAR2) return g_settings.selBar >= 0;  // a seleção fosca não tem degradê
     if (d.val == BV_PANELSTYLE) return g_settings.panelLookCustom;
     if (d.val == BV_CLEARMENUS) return (BsBarThemes() & 0x02) != 0;  // a barra (ou um monitor) no Transparente
     if (d.val == BV_ISLLIVE) return !IslSolid();  // só com um estilo de vidro
@@ -14506,6 +14553,12 @@ static void BsDrawRow(size_t i, const BsRow& row, float oy) {
                     rt->FillEllipse(el, g_bs.brush);
                     g_bs.brush->SetColor(BsFg(0.35f));
                     rt->DrawEllipse(el, g_bs.brush, 1 * s);
+                    if (d.val == BV_SELBAR2) {
+                        // Sem segunda cor: um traço.
+                        float q = rad * 0.6f;
+                        rt->DrawLine(D2D1::Point2F(p.x - q, p.y + q), D2D1::Point2F(p.x + q, p.y - q), g_bs.brush, 1.4f * s,
+                                     RoundStroke());
+                    }
                 } else if (tintRow) {
                     DWORD cv = kTintPalette[k - 1];
                     g_bs.brush->SetColor(D2D1::ColorF(((cv >> 16) & 255) / 255.0f, ((cv >> 8) & 255) / 255.0f, (cv & 255) / 255.0f, 1));
@@ -23665,9 +23718,7 @@ static void Render(Bar* b) {
         D2D1_COLOR_F ac;
         bool acDark = false;
         if (SelColor(&ac, &acDark)) {
-            ac.a = i == b->open || i == b->flash ? 0.95f : 0.80f;
-            b->brush->SetColor(ac);
-            b->rt->FillRoundedRectangle(pill, b->brush);
+            SelFill(b->rt, b->brush, pill, ac, i == b->open || i == b->flash ? 0.95f : 0.80f);
             selItem[i] = acDark ? 0 : 1;  // amarelo: mantém o texto normal
         } else {
             b->brush->SetColor(i == b->open || i == b->flash ? hlOpen : hl);
@@ -25992,6 +26043,8 @@ const UiTr kUiTr[] = {
     {L"Pílulas de aviso", L"Notice Pills", L"Píldoras de aviso", L"Pastilles d’alerte", L"Hinweis-Pillen", L"Pillole di avviso", L"提醒胶囊"},
     {L"Avisos que descem da barra e o botão de Notificações", L"Notices that drop from the bar and the Notifications button", L"Avisos que bajan de la barra y el botón de Notificaciones", L"Alertes qui descendent de la barre et bouton Notifications", L"Hinweise, die aus der Leiste fallen, und die Mitteilungstaste", L"Avvisi che scendono dalla barra e il pulsante Notifiche", L"从菜单栏下拉的提醒和通知按钮"},
     {L"Mostrar avisos em pílula", L"Show notice pills", L"Mostrar avisos en píldora", L"Afficher les pastilles d’alerte", L"Hinweis-Pillen anzeigen", L"Mostra avvisi a pillola", L"显示提醒胶囊"},
+    {L"Segunda cor (degradê)", L"Second color (gradient)", L"Segundo color (degradado)", L"Deuxième couleur (dégradé)", L"Zweite Farbe (Verlauf)", L"Secondo colore (sfumatura)", L"第二种颜色（渐变）"},
+    {L"O primeiro círculo: uma cor só; outra cor faz a seleção ir da cor de cima até ela", L"The first circle: one color; another color makes the selection go from the color above to it", L"El primer círculo: un solo color; otro color hace que la selección vaya del color de arriba a él", L"Le premier cercle : une seule couleur ; une autre couleur fait aller la sélection de la couleur du dessus jusqu’à elle", L"Der erste Kreis: eine Farbe; eine andere Farbe lässt die Auswahl von der Farbe darüber zu ihr verlaufen", L"Il primo cerchio: un solo colore; un altro colore fa andare la selezione dal colore sopra fino a esso", L"第一个圆：单色；选择其他颜色时，选中效果从上方颜色渐变到该颜色"},
     {L"Testar notificações", L"Test notifications", L"Probar notificaciones", L"Tester les notifications", L"Benachrichtigungen testen", L"Prova le notifiche", L"测试通知"},
     {L"Cada toque manda uma notificação de teste, de um app diferente, que fica no botão; Limpar, no painel, tira todas", L"Each click sends a test notification from a different app, kept in the button; Clear, in the panel, removes them all", L"Cada clic envía una notificación de prueba de una app distinta, que queda en el botón; Borrar, en el panel, las quita todas", L"Chaque clic envoie une notification de test d’une app différente, gardée dans le bouton ; Effacer, dans le panneau, les retire toutes", L"Jeder Klick sendet eine Testbenachrichtigung einer anderen App, die im Knopf bleibt; Löschen im Bereich entfernt alle", L"Ogni clic invia una notifica di prova da un’app diversa, che resta nel pulsante; Cancella, nel pannello, le rimuove tutte", L"每次点击发送一条来自不同应用的测试通知，保留在按钮中；面板中的“清除”会全部移除"},
     {L"%s (teste %s)", L"%s (test %s)", L"%s (prueba %s)", L"%s (test %s)", L"%s (Test %s)", L"%s (prova %s)", L"%s（测试 %s）"},
