@@ -21679,6 +21679,12 @@ static void NtfRender() {
     rt->Clear(D2D1::ColorF(0, 0, 0, 0));
     if (anim) PushAnim(rt, layer, pv, pivot);
     const bool floating = NtfFloating();
+    // Um fundo invisível (alfa 1/255) no painel todo: com o vidro bem
+    // transparente, os pixels dos cartões ficavam com alfa 0 e a roda do mouse
+    // (e o clique) passavam para a janela de baixo; só pegava onde os cartões
+    // da pilha se somavam.
+    br->SetColor(D2D1::ColorF(0, 0, 0, 1.0f / 255));
+    rt->FillRectangle(P, br);
     if (floating) {
         // Sem painel atrás: o topo é uma pílula de vidro, e cada notificação o seu cartão.
         // Mesma largura dos cartões.
