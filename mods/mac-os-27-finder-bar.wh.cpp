@@ -65,7 +65,7 @@ Small glass pills drop from the bar for headphones, audio output, low battery, c
 
 Turn on **Windows notifications** in logo → **Menu Bar Settings…** → **Notice pills** (off by default) and the bar shows your apps' notifications:
 
-- in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked as solid cards, and a click spreads them into the glass list with an animation; scrolling, with the wheel or by dragging, piles the cards at the edges, as on Android) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
+- in the pill and in the bell panel, grouped by app. The panel is **Floating** (default: the top and each notification in its own glass card, in the Control Center's style; with three apps or more the cards are stacked, the mouse wheel turns the stack to the next one, and a click spreads them into the list with an animation; scrolling, with the wheel or by dragging, piles the cards at the edges, as on Android) or **Inside the box** (one panel); with nothing to show it's always the small panel. The text color follows the theme or is always white or black. The bell itself is one of the bar items
 - a round picture on each notification: the sender's photo when the app saves it on the PC with the notification (with the app's icon in the corner), otherwise the app's icon. Photos sent as web links (WhatsApp does this) aren't downloaded
 - **reply** to messages (like WhatsApp) right from the pill or from the Reply button in the panel, when the app supports replies. Your replies stay in the card until you clear it
 - new messages from the same conversation (same app and sender or group) go into the card that's already there, in order, instead of a new one
@@ -20898,8 +20898,11 @@ struct NtfBlock {
     float rsAlpha = 1, rsContent = 1;  // na pilha: a do bloco e a do conteúdo
     float alpha = 1, contentA = 1;
     int order = 0;  // a ordem na cascata (o cartão de cima é o 0)
-    float stackE = 1;     // 0 na pilha fechada, 1 na lista (os cartões sólidos viram vidro)
+    float stackE = 1;     // 0 na pilha fechada, 1 na lista
     float pileDepth = 0;  // rolando: quanto o cartão entrou no monte da borda (0 = livre)
+    int depth = 0;        // na pilha: 0 na frente, 1 e 2 atrás (o resto escondido)
+    D2D1_RECT_F rsFrom{}; // girando a pilha: de onde o cartão sai
+    float alphaFrom = 1, contentFrom = 1;
 };
 struct NtfGroup {
     std::wstring app, aumid;
@@ -20927,6 +20930,12 @@ struct NotifPanel {
     // Rolagem suave (roda do mouse ou arrastar na vertical), com os cartões
     // se amontoando nas bordas como no Android.
     float scrollTarget = 0;
+    // Na pilha fechada, a roda do mouse gira os cartões: stackRot é o grupo da frente.
+    int stackRot = 0;
+    ULONGLONG rotTick = 0;
+    float stackHFrom = 0;
+    size_t cardsEnd = 0;
+    float cardsListEnd = 0;
     bool dragScroll = false;
     float dragY0 = 0, dragScroll0 = 0;
     std::set<std::wstring> expanded;
@@ -21165,12 +21174,12 @@ static void NtfPile() {
             dy = Tt - D * (1 - std::exp(-x)) - vt;
         }
         if (x <= 0) continue;
-        float in = 14 * s * (1 - std::exp(-x * 0.6f));
+        float in = 0;  // mesma largura (só se amontoam)
         b.pileDepth = x;
         b.r = D2D1::RectF(b.r.left + in, b.r.top + dy, b.r.right - in, b.r.bottom + dy);
         if (b.reply.right > b.reply.left)
             b.reply = D2D1::RectF(b.reply.left - in, b.reply.top + dy, b.reply.right - in, b.reply.bottom + dy);
-        b.contentA *= std::clamp(1 - (x - 0.4f) * 0.8f, 0.0f, 1.0f);  // fundo do monte: só o vidro
+        b.contentA *= std::clamp(1 - (x - 1.0f) * 0.7f, 0.0f, 1.0f);  // fundo do monte: só o vidro
         b.alpha *= std::clamp(1.8f - x * 0.25f, 0.0f, 1.0f);           // bem no fundo, some
         if (b.kind == 1) byGroup[b.group] = {dy, in};
     }
@@ -21180,6 +21189,75 @@ static void NtfPile() {
             b.r = D2D1::RectF(b.r.left + m.in, b.r.top + m.dy, b.r.right + m.in, b.r.bottom + m.dy);
             b.alpha = 0;  // no monte, o chip fica escondido
         }
+}
+// Onde cada bloco fica na pilha fechada, com o grupo stackRot na frente: o da
+// frente inteiro; os dois de trás um pouco menores e abaixo, aparecendo pela
+// borda de baixo; o resto escondido atrás. Os blocos de baixo sobem junto.
+static void NtfStackRects() {
+    float s = g_ntf.s;
+    int n = (int)g_ntf.groups.size();
+    if (!g_ntf.stackable || n == 0) {
+        for (NtfBlock& b : g_ntf.blocks) {
+            b.rs = b.rl;
+            b.rsAlpha = b.rsContent = 1;
+            b.depth = 0;
+        }
+        g_ntf.stackH = g_ntf.listH;
+        return;
+    }
+    const NtfBlock* front = nullptr;
+    for (const NtfBlock& b : g_ntf.blocks)
+        if (b.kind == 1 && b.group == g_ntf.stackRot) front = &b;
+    if (!front) return;
+    float frontH = front->rl.bottom - front->rl.top, x0 = front->rl.left, x1 = front->rl.right;
+    std::map<int, D2D1_RECT_F> cardRs;
+    for (NtfBlock& b : g_ntf.blocks) {
+        if (b.kind != 1) continue;
+        int d = ((b.group - g_ntf.stackRot) % n + n) % n;
+        int dd = std::min(d, 2);
+        float in = 11 * s * dd, drop = 9 * s * dd;
+        b.depth = d;
+        b.rs = d == 0 ? D2D1::RectF(x0, 0, x1, frontH) : D2D1::RectF(x0 + in, drop, x1 - in, frontH + drop);
+        b.rsAlpha = d <= 2 ? 1.0f : 0.0f;
+        b.rsContent = d == 0 ? 1.0f : 0.0f;
+        cardRs[b.group] = b.rs;
+    }
+    float shift = frontH + 9 * s * 2 + 14 * s - g_ntf.cardsListEnd;
+    for (size_t i = 0; i < g_ntf.blocks.size(); i++) {
+        NtfBlock& b = g_ntf.blocks[i];
+        if (b.kind == 2) {
+            // O chip vai junto com o seu cartão; só o da frente aparece.
+            const NtfBlock* card = nullptr;
+            for (const NtfBlock& c : g_ntf.blocks)
+                if (c.kind == 1 && c.group == b.group) card = &c;
+            float dx = card ? card->rs.left - card->rl.left : 0, dy = card ? card->rs.top - card->rl.top : 0;
+            b.depth = card ? card->depth : 0;
+            b.rs = D2D1::RectF(b.rl.left + dx, b.rl.top + dy, b.rl.right + dx, b.rl.bottom + dy);
+            b.rsAlpha = b.depth == 0 ? 1.0f : 0.0f;
+        } else if (b.kind == 6) {
+            b.rs = b.rl;
+            b.rsAlpha = 0;
+        } else if (b.kind != 1 && i >= g_ntf.cardsEnd) {
+            b.rs = D2D1::RectF(b.rl.left, b.rl.top + shift, b.rl.right, b.rl.bottom + shift);
+        }
+    }
+    g_ntf.stackH = g_ntf.listH + shift;
+}
+// Gira a pilha fechada (roda do mouse): o da frente vai para trás e o próximo vem.
+static void NtfStackRotate(int dir) {
+    int n = (int)g_ntf.groups.size();
+    if (!g_ntf.stackable || g_ntf.stackOpen || g_ntf.stackTick || n < 2 || !g_ntf.hwnd) return;
+    for (NtfBlock& b : g_ntf.blocks) {
+        b.rsFrom = b.r;
+        b.alphaFrom = b.alpha;
+        b.contentFrom = b.contentA;
+    }
+    g_ntf.stackHFrom = g_ntf.contentH;
+    g_ntf.stackRot = ((g_ntf.stackRot + dir) % n + n) % n;
+    NtfStackRects();
+    g_ntf.rotTick = GetTickCount64();
+    g_ntf.hover = -1;
+    SetTimer(g_ntf.hwnd, 4, 10, nullptr);
 }
 static float NtfEaseBack(float u) {
     const float c1 = 1.35f, c3 = c1 + 1;
@@ -21204,7 +21282,7 @@ static bool NtfApplyStack() {
             if (u < 1) done = false;
             float k = NtfEaseBack(u);
             e = g_ntf.stackOpen ? k : 1 - k;
-            if (b.kind == 1 && b.order == 0) frontE = std::clamp(e, 0.0f, 1.0f);
+            if (b.kind == 1 && b.depth == 0) frontE = std::clamp(e, 0.0f, 1.0f);
         }
         auto lerp = [&](float a, float c) { return a + (c - a) * e; };
         b.r = D2D1::RectF(lerp(b.rs.left, b.rl.left), lerp(b.rs.top, b.rl.top), lerp(b.rs.right, b.rl.right),
@@ -21213,14 +21291,31 @@ static bool NtfApplyStack() {
         b.stackE = g_ntf.stackable ? ec : 1.0f;
         b.alpha = b.rsAlpha + (1 - b.rsAlpha) * ec;
         b.contentA = b.rsContent + (1 - b.rsContent) * ec * ec;
+        if (g_ntf.rotTick && !g_ntf.stackOpen) {
+            // Girando: de onde estava até o novo lugar na pilha.
+            float u = std::clamp((float)(GetTickCount64() - g_ntf.rotTick) / 380.0f, 0.0f, 1.0f);
+            if (u < 1) done = false;
+            float k = NtfEaseBack(u), kc = std::clamp(u * 1.6f, 0.0f, 1.0f);
+            auto mix = [&](float a, float c) { return a + (c - a) * k; };
+            b.r = D2D1::RectF(mix(b.rsFrom.left, b.r.left), mix(b.rsFrom.top, b.r.top), mix(b.rsFrom.right, b.r.right),
+                              mix(b.rsFrom.bottom, b.r.bottom));
+            b.alpha = b.alphaFrom + (b.alpha - b.alphaFrom) * kc;
+            b.contentA = b.contentFrom + (b.contentA - b.contentFrom) * kc;
+        }
         if (b.replyL.right > b.replyL.left) {
             float dx = b.r.right - b.rl.right, dy = b.r.bottom - b.rl.bottom;
             b.reply = D2D1::RectF(b.replyL.left + dx, b.replyL.top + dy, b.replyL.right + dx, b.replyL.bottom + dy);
         }
     }
-    if (done) g_ntf.stackTick = 0;
+    float stackNow = g_ntf.stackH;
+    if (g_ntf.rotTick && !g_ntf.stackOpen) {
+        float u = std::clamp((float)(GetTickCount64() - g_ntf.rotTick) / 380.0f, 0.0f, 1.0f);
+        float k = 1 - (1 - u) * (1 - u) * (1 - u);
+        stackNow = g_ntf.stackHFrom + (g_ntf.stackH - g_ntf.stackHFrom) * k;
+    }
+    if (done) g_ntf.stackTick = g_ntf.rotTick = 0;
     // O painel cresce (ou encolhe) com o cartão de cima.
-    g_ntf.contentH = g_ntf.stackable ? g_ntf.stackH + (g_ntf.listH - g_ntf.stackH) * frontE : g_ntf.listH;
+    g_ntf.contentH = g_ntf.stackable ? stackNow + (g_ntf.listH - stackNow) * frontE : g_ntf.listH;
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
     float maxH = 640 * s;
@@ -21239,6 +21334,7 @@ static void NtfStackToggle(bool open) {
     if (!g_ntf.stackable || g_ntf.stackOpen == open || !g_ntf.hwnd) return;
     g_ntf.stackOpen = open;
     g_ntf.stackTick = GetTickCount64();
+    g_ntf.rotTick = 0;
     g_ntf.scroll = g_ntf.scrollTarget = 0;
     g_ntf.hover = -1;
     SetTimer(g_ntf.hwnd, 4, 10, nullptr);
@@ -21259,7 +21355,6 @@ static void NtfLayout() {
         g_ntf.blocks.push_back(hb);
         y += 38 * s;
     }
-    float frontH = 0;
     for (size_t gi = 0; gi < g_ntf.groups.size(); gi++) {
         const NtfGroup& g = g_ntf.groups[gi];
         // O ícone e o nome do app ficam dentro do cartão, na linha da hora.
@@ -21271,27 +21366,16 @@ static void NtfLayout() {
         NtfBlock card{1, D2D1::RectF(x0, y, x1, y + h), (int)gi, g.items};
         if (canReply) card.reply = D2D1::RectF(x1 - 12 * s - 104 * s, y + h - 32 * s, x1 - 12 * s, y + h - 8 * s);
         card.order = (int)gi;
-        // Na pilha: o de cima inteiro; os dois de trás, menores e um pouco abaixo,
-        // aparecendo só pela borda de baixo (sem o conteúdo); o resto some atrás.
-        if (gi == 0) frontH = h;
-        int d = (int)std::min<size_t>(gi, 2);
-        float in = 11 * s * d, drop = 9 * s * d;
-        card.rs = gi == 0 ? D2D1::RectF(x0, 0, x1, h) : D2D1::RectF(x0 + in, drop, x1 - in, frontH + drop);
-        card.rsAlpha = gi <= 2 ? 1.0f : 0.0f;
-        card.rsContent = gi == 0 ? 1.0f : 0.0f;
         g_ntf.blocks.push_back(card);
         if (extra > 0) {
             NtfBlock chip{2, D2D1::RectF(x0 + 12 * s, y + h - 32 * s, x0 + 12 * s + 150 * s, y + h - 8 * s), (int)gi, {}};
-            float dy = card.rs.top - y;
-            chip.rs = D2D1::RectF(chip.r.left, chip.r.top + dy, chip.r.right, chip.r.bottom + dy);
-            chip.rsAlpha = gi == 0 ? 1.0f : 0.0f;
             chip.order = (int)gi;
             g_ntf.blocks.push_back(chip);
         }
         y += h + 12 * s;
     }
-    size_t cardsEnd = g_ntf.blocks.size();
-    float stackShift = g_ntf.stackable ? frontH + 9 * s * 2 + 14 * s - y : 0;
+    g_ntf.cardsEnd = g_ntf.blocks.size();
+    g_ntf.cardsListEnd = y;
     // Vazio (sem notificações e sem avisos para mostrar): o painel pequeno.
     g_ntf.compact = g_ntf.groups.empty();
     if (g_settings.islHistNotices)
@@ -21328,17 +21412,16 @@ static void NtfLayout() {
             y += h + 12 * s;
         }
     }
-    // Os blocos de baixo (avisos) sobem junto quando a pilha fecha.
-    for (size_t i = 0; i < g_ntf.blocks.size(); i++) {
-        NtfBlock& b = g_ntf.blocks[i];
+    for (NtfBlock& b : g_ntf.blocks) {
         b.rl = b.r;
         b.replyL = b.reply;
-        if (!g_ntf.stackable) b.rs = b.r;
-        else if (i >= cardsEnd) b.rs = D2D1::RectF(b.r.left, b.r.top + stackShift, b.r.right, b.r.bottom + stackShift);
-        if (b.kind == 6) b.rs = b.r;
     }
     g_ntf.listH = y;
-    g_ntf.stackH = y + stackShift;
+    if (g_ntf.stackable && !g_ntf.groups.empty())
+        g_ntf.stackRot = ((g_ntf.stackRot % (int)g_ntf.groups.size()) + (int)g_ntf.groups.size()) % (int)g_ntf.groups.size();
+    else g_ntf.stackRot = 0;
+    NtfStackRects();
+    g_ntf.stackHFrom = g_ntf.stackH;
     {
         MONITORINFO mi{};
         mi.cbSize = sizeof(mi);
@@ -21463,6 +21546,39 @@ struct NtfAlphaScope {
             rt->PopLayer();
             layer->Release();
         }
+    }
+};
+// Desenha tudo menos a área de um cartão arredondado (o da frente da pilha).
+struct NtfMaskScope {
+    ID2D1RenderTarget* rt;
+    ID2D1Layer* layer = nullptr;
+    ID2D1Geometry* geo = nullptr;
+    NtfMaskScope(ID2D1RenderTarget* t, const D2D1_RECT_F* hole, float radius) : rt(t) {
+        if (!hole) return;
+        ID2D1RectangleGeometry* all = nullptr;
+        ID2D1RoundedRectangleGeometry* cut = nullptr;
+        ID2D1PathGeometry* path = nullptr;
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(g_d2d->CreateRectangleGeometry(D2D1::RectF(-10000, -10000, 10000, 10000), &all)) &&
+            SUCCEEDED(g_d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(*hole, radius, radius), &cut)) &&
+            SUCCEEDED(g_d2d->CreatePathGeometry(&path)) && SUCCEEDED(path->Open(&sink)) &&
+            SUCCEEDED(all->CombineWithGeometry(cut, D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink)) && SUCCEEDED(sink->Close())) {
+            geo = path;
+            path = nullptr;
+        }
+        SafeRelease(sink);
+        SafeRelease(path);
+        SafeRelease(cut);
+        SafeRelease(all);
+        if (geo && SUCCEEDED(rt->CreateLayer(&layer)))
+            rt->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), geo, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE), layer);
+    }
+    ~NtfMaskScope() {
+        if (layer) {
+            rt->PopLayer();
+            layer->Release();
+        }
+        SafeRelease(geo);
     }
 };
 static void NtfRender() {
@@ -21600,13 +21716,21 @@ static void NtfRender() {
     float oy = g_ntf.view.top - g_ntf.scroll;
     // Os cartões de baixo primeiro (na pilha, os de trás ficam atrás), e cada chip
     // logo depois do seu cartão.
+    bool stackFront = false;
+    D2D1_RECT_F frontR{};
+    if (floating && g_ntf.stackable && (!g_ntf.stackOpen || g_ntf.stackTick))
+        for (const NtfBlock& b : g_ntf.blocks)
+            if (b.kind == 1 && b.depth == 0) {
+                frontR = D2D1::RectF(b.r.left, b.r.top + oy, b.r.right, b.r.bottom + oy);
+                stackFront = true;
+            }
     std::vector<size_t> drawOrder;
     for (size_t i = 0; i < g_ntf.blocks.size(); i++) drawOrder.push_back(i);
     std::stable_sort(drawOrder.begin(), drawOrder.end(), [](size_t a, size_t c) {
         const NtfBlock &x = g_ntf.blocks[a], &y = g_ntf.blocks[c];
         bool xc = x.kind == 1 || x.kind == 2, yc = y.kind == 1 || y.kind == 2;
         if (x.pileDepth != y.pileDepth) return x.pileDepth > y.pileDepth;  // o fundo do monte atrás
-        if (xc && yc && x.group != y.group) return x.group > y.group;
+        if (xc && yc && x.group != y.group) return x.depth != y.depth ? x.depth > y.depth : x.group > y.group;
         return false;
     });
     for (size_t bi : drawOrder) {
@@ -21614,6 +21738,9 @@ static void NtfRender() {
         D2D1_RECT_F r = D2D1::RectF(b.r.left, b.r.top + oy, b.r.right, b.r.bottom + oy);
         if (r.bottom < g_ntf.view.top - 4 || r.top > g_ntf.view.bottom + 4) continue;
         if (b.alpha < 0.01f) continue;
+        // Na pilha, o cartão da frente não deixa ver os de trás: eles só
+        // aparecem fora dele (pela borda de baixo).
+        NtfMaskScope behind(rt, stackFront && b.kind == 1 && b.depth > 0 ? &frontR : nullptr, 20 * s);
         NtfAlphaScope fade(rt, b.alpha < 0.999f, b.alpha);
         // O cartão sendo arrastado: vai junto com o mouse e esmaece.
         struct SwipeScope {
@@ -21648,17 +21775,6 @@ static void NtfRender() {
             D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 18 * s, 18 * s);
             if (floating) {
                 DrawLiquidGlass(rt, br, r, 20 * s, s, false, hot, g_ntf.glass.ok, true);
-                if (b.stackE < 0.999f) {
-                    // Empilhado: cartões sólidos, como no Android; o vidro volta ao abrir.
-                    D2D1_COLOR_F solid = ntfInk ? D2D1::ColorF(0.95f, 0.95f, 0.96f, 1) : D2D1::ColorF(0.15f, 0.15f, 0.16f, 1);
-                    if (hot) solid = ntfInk ? D2D1::ColorF(0.90f, 0.90f, 0.92f, 1) : D2D1::ColorF(0.20f, 0.20f, 0.21f, 1);
-                    solid.a = 1 - b.stackE;
-                    br->SetColor(solid);
-                    D2D1_ROUNDED_RECT sr = D2D1::RoundedRect(r, 20 * s, 20 * s);
-                    rt->FillRoundedRectangle(sr, br);
-                    br->SetColor(ntfInk ? D2D1::ColorF(0, 0, 0, 0.08f * solid.a) : D2D1::ColorF(1, 1, 1, 0.10f * solid.a));
-                    rt->DrawRoundedRectangle(sr, br, 1.0f * s);
-                }
             } else {
                 GlassCard(rt, br, rr,
                           hot ? (g_light ? D2D1::ColorF(1, 1, 1, 0.55f) : D2D1::ColorF(1, 1, 1, 0.16f))
@@ -21906,7 +22022,8 @@ static int NtfHit(float x, float y) {
             if ((pass == 0) != (b.kind == 2)) continue;
             if (b.kind == 3 || b.kind == 5 || b.alpha < 0.5f) continue;
             if (x >= b.r.left && x < b.r.right && cy >= b.r.top && cy < b.r.bottom &&
-                (best < 0 || b.pileDepth < g_ntf.blocks[best].pileDepth))
+                (best < 0 || b.pileDepth < g_ntf.blocks[best].pileDepth ||
+                 (b.pileDepth == g_ntf.blocks[best].pileDepth && b.depth < g_ntf.blocks[best].depth)))
                 best = (int)i;
         }
         if (best >= 0) return best;
@@ -22025,7 +22142,11 @@ static LRESULT CALLBACK NtfWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_MOUSEWHEEL: {
-            if (g_ntf.stackable && !g_ntf.stackOpen) return 0;  // a pilha fechada não rola
+            if (g_ntf.stackable && !g_ntf.stackOpen) {
+                // A pilha fechada gira: para baixo, a próxima notificação vem para a frente.
+                NtfStackRotate(GET_WHEEL_DELTA_WPARAM(wp) < 0 ? 1 : -1);
+                return 0;
+            }
             g_ntf.scrollTarget = std::clamp(g_ntf.scrollTarget - GET_WHEEL_DELTA_WPARAM(wp) / 120.0f * 90 * g_ntf.s, 0.0f,
                                             NtfMaxScroll());
             SetTimer(hwnd, 5, 10, nullptr);
@@ -22244,6 +22365,8 @@ static void NtfToggle(Bar* b, int idx) {
     g_ntf.stackOpen = false;  // abre na pilha
     g_ntf.stackTick = 0;
     g_ntf.scrollTarget = 0;
+    g_ntf.stackRot = 0;
+    g_ntf.rotTick = 0;
     g_ntf.H = 0;
     NtfBuildGroups();
     NtfLayout();
