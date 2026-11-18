@@ -12864,7 +12864,7 @@ enum BsVal {
     BV_NONE, BV_CLOCK, BV_GLOBALMENU, BV_NET, BV_BT, BV_BATT, BV_DISPLAY, BV_VOL, BV_KBD, BV_TRAY, BV_CC,
     BV_NOW, BV_FOCUS, BV_SEARCH, BV_PRIV, BV_MORE, BV_ISLAND, BV_KBDNAV, BV_USB, BV_DLDONE, BV_CLIP, BV_SHOT,
     BV_ISLFOCUS, BV_ISLCAPS, BV_ISLBATT, BV_ISLBT, BV_ISLAUDIO, BV_ISLHIST, BV_ISLSTYLE, BV_ISLSIZE, BV_ISLDUR, BV_ISLIN, BV_ISLOUT,
-    BV_ISLPOS, BV_ISLTEST, BV_ISLCLEAR, BV_NPLAYOUT, BV_NPSIZE, BV_WINNOTIF, BV_WINONLY, BV_ISLHISTNOT,
+    BV_ISLPOS, BV_ISLTEST, BV_NTFTEST, BV_ISLCLEAR, BV_NPLAYOUT, BV_NPSIZE, BV_WINNOTIF, BV_WINONLY, BV_ISLHISTNOT,
     BV_WXPROV, BV_WXUNIT, BV_WXLOOK, BV_WXANIM, BV_WXGLASS, BV_WXINT, BV_WXTEMP, BV_WXPLACE, BV_WXNOW, BV_WXRESULT,
     BV_BATTPCT, BV_HIDEFS, BV_OSD, BV_DIM,
     BV_G_REFRACT, BV_G_BLUR, BV_G_LIVE, BV_WEATHER, BV_BARSTYLE, BV_HEIGHT, BV_FONT, BV_BSSTYLE, BV_BSTRANSP, BV_SELBAR, BV_UPDATES,
@@ -13000,6 +13000,7 @@ static const BsRowDef kBsRows[] = {
     {BR_GROUP, BV_NONE, L"Botão de Notificações", 0, 0},
     {BR_CHOICE, BV_NTFLAYOUT, L"Notificações", 0, 0, L"Flutuante: o topo e cada notificação no seu próprio vidro, sem caixa atrás; dentro da caixa: tudo num painel só"},
     {BR_CHOICE, BV_NTFTEXT, L"Cor do texto das notificações", 0, 0, L"Seguir o tema, ou sempre branco ou preto, em qualquer tema"},
+    {BR_ACTION, BV_NTFTEST, L"Testar notificações", 0, 0, L"Cada toque manda uma notificação de teste, de um app diferente, que fica no botão; Limpar, no painel, tira todas"},
     {BR_SWITCH, BV_ISLHISTNOT, L"No botão, mostrar também os avisos da pílula", 0, 0},
     {BR_CHOICE, BV_NTFSHAPE, L"Formato dos ícones", 0, 0, L"Nas notificações: círculo ou o formato dos ícones do macOS"},
     {BR_ACTION, BV_ISLCLEAR, L"Limpar as notificações", 0, 0},
@@ -14063,6 +14064,7 @@ static PCWSTR BsChoiceText(int val) {
 static PCWSTR BsActionText(int val) {
     switch (val) {
         case BV_ISLTEST: return L"Testar";
+        case BV_NTFTEST: return L"Testar";
         case BV_ISLCLEAR: return L"Limpar";
         case BV_WXNOW: return L"Atualizar";
         case BV_THEMERESET: return L"Restaurar";
@@ -22493,6 +22495,30 @@ static void BsAction(int val) {
             IslandShow(0xEA8F, 0x0A84FF,
                        L"Teste da pílula", L"Assim aparecem os avisos", L"", false, true);
             break;
+        case BV_NTFTEST: {
+            // Uma notificação de teste por toque, alternando entre apps de mentira
+            // (para ver a pilha, os grupos e a rolagem do painel).
+            static int n = 0;
+            struct Fake { PCWSTR app, who, text; DWORD color; };
+            static const Fake kFake[] = {
+                {L"Mensagens", L"Ana", L"Chegou! Te espero na entrada.", 0x30D158},
+                {L"E-mail", L"Equipe", L"Resumo da semana: 3 tarefas concluídas.", 0x0A84FF},
+                {L"Agenda", L"Reunião às 15:00", L"Sala 2, com a equipe de design.", 0xFF453A},
+                {L"Fotos", L"Novas memórias", L"Veja as fotos de uma viagem.", 0xFF9F0A},
+                {L"Música", L"Tocando agora", L"Uma playlist nova foi criada para você.", 0xBF5AF2},
+            };
+            const Fake& f = kFake[n % ARRAYSIZE(kFake)];
+            n++;
+            IslandNote note;
+            note.glyph = 0xEA8F;
+            note.color = f.color;
+            note.isNotif = true;
+            note.app = T(f.app);
+            note.title = T(f.who);
+            note.body = TF(L"%s (teste %s)", {std::wstring(T(f.text)), std::to_wstring(n)});
+            IslandPush(note, false);
+            break;
+        }
         case BV_ISLCLEAR:
             g_islHist.clear();
             g_islUnread = 0;
@@ -25960,6 +25986,20 @@ const UiTr kUiTr[] = {
     {L"Pílulas de aviso", L"Notice Pills", L"Píldoras de aviso", L"Pastilles d’alerte", L"Hinweis-Pillen", L"Pillole di avviso", L"提醒胶囊"},
     {L"Avisos que descem da barra e o botão de Notificações", L"Notices that drop from the bar and the Notifications button", L"Avisos que bajan de la barra y el botón de Notificaciones", L"Alertes qui descendent de la barre et bouton Notifications", L"Hinweise, die aus der Leiste fallen, und die Mitteilungstaste", L"Avvisi che scendono dalla barra e il pulsante Notifiche", L"从菜单栏下拉的提醒和通知按钮"},
     {L"Mostrar avisos em pílula", L"Show notice pills", L"Mostrar avisos en píldora", L"Afficher les pastilles d’alerte", L"Hinweis-Pillen anzeigen", L"Mostra avvisi a pillola", L"显示提醒胶囊"},
+    {L"Testar notificações", L"Test notifications", L"Probar notificaciones", L"Tester les notifications", L"Benachrichtigungen testen", L"Prova le notifiche", L"测试通知"},
+    {L"Cada toque manda uma notificação de teste, de um app diferente, que fica no botão; Limpar, no painel, tira todas", L"Each click sends a test notification from a different app, kept in the button; Clear, in the panel, removes them all", L"Cada clic envía una notificación de prueba de una app distinta, que queda en el botón; Borrar, en el panel, las quita todas", L"Chaque clic envoie une notification de test d’une app différente, gardée dans le bouton ; Effacer, dans le panneau, les retire toutes", L"Jeder Klick sendet eine Testbenachrichtigung einer anderen App, die im Knopf bleibt; Löschen im Bereich entfernt alle", L"Ogni clic invia una notifica di prova da un’app diversa, che resta nel pulsante; Cancella, nel pannello, le rimuove tutte", L"每次点击发送一条来自不同应用的测试通知，保留在按钮中；面板中的“清除”会全部移除"},
+    {L"%s (teste %s)", L"%s (test %s)", L"%s (prueba %s)", L"%s (test %s)", L"%s (Test %s)", L"%s (prova %s)", L"%s（测试 %s）"},
+    {L"Mensagens", L"Messages", L"Mensajes", L"Messages", L"Nachrichten", L"Messaggi", L"信息"},
+    {L"Equipe", L"Team", L"Equipo", L"Équipe", L"Team", L"Team", L"团队"},
+    {L"Chegou! Te espero na entrada.", L"I’m here! Waiting at the entrance.", L"¡Llegué! Te espero en la entrada.", L"Je suis là ! Je t’attends à l’entrée.", L"Bin da! Ich warte am Eingang.", L"Sono arrivata! Ti aspetto all’ingresso.", L"我到了！在门口等你。"},
+    {L"Resumo da semana: 3 tarefas concluídas.", L"Weekly summary: 3 tasks done.", L"Resumen de la semana: 3 tareas hechas.", L"Résumé de la semaine : 3 tâches terminées.", L"Wochenübersicht: 3 Aufgaben erledigt.", L"Riepilogo della settimana: 3 attività completate.", L"本周总结：完成 3 项任务。"},
+    {L"Reunião às 15:00", L"Meeting at 3:00 PM", L"Reunión a las 15:00", L"Réunion à 15 h", L"Besprechung um 15:00", L"Riunione alle 15:00", L"15:00 会议"},
+    {L"Sala 2, com a equipe de design.", L"Room 2, with the design team.", L"Sala 2, con el equipo de diseño.", L"Salle 2, avec l’équipe design.", L"Raum 2, mit dem Designteam.", L"Sala 2, con il team di design.", L"2 号会议室，与设计团队。"},
+    {L"Fotos", L"Photos", L"Fotos", L"Photos", L"Fotos", L"Foto", L"照片"},
+    {L"Novas memórias", L"New memories", L"Nuevos recuerdos", L"Nouveaux souvenirs", L"Neue Erinnerungen", L"Nuovi ricordi", L"新回忆"},
+    {L"Veja as fotos de uma viagem.", L"See the photos from a trip.", L"Mira las fotos de un viaje.", L"Revoyez les photos d’un voyage.", L"Sieh dir die Fotos einer Reise an.", L"Guarda le foto di un viaggio.", L"查看一次旅行的照片。"},
+    {L"Música", L"Music", L"Música", L"Musique", L"Musik", L"Musica", L"音乐"},
+    {L"Uma playlist nova foi criada para você.", L"A new playlist was made for you.", L"Se creó una nueva lista para ti.", L"Une nouvelle playlist a été créée pour vous.", L"Eine neue Playlist wurde für dich erstellt.", L"È stata creata una nuova playlist per te.", L"为你创建了一个新歌单。"},
     {L"Testar a pílula agora", L"Test the pill now", L"Probar la píldora ahora", L"Tester la pastille maintenant", L"Pille jetzt testen", L"Prova la pillola ora", L"立即测试胶囊"},
     {L"Aparência", L"Appearance", L"Apariencia", L"Apparence", L"Erscheinungsbild", L"Aspetto", L"外观"},
     {L"Estilo", L"Style", L"Estilo", L"Style", L"Stil", L"Stile", L"样式"},
